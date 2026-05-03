@@ -9,7 +9,7 @@ import time
 
 game = "TUR_-_BRA_3-1"
 # — your model & file paths —
-model = YOLO('Thesis/ball+players_tuning10/weights/best.pt')
+model = YOLO('ball+players_tuning10/weights/best.pt')
 video_path = f'Thesis/Paralympics2024/{game}/{game}.MOV'
 excel_output_path = f'Thesis/Paralympics2024/{game}/outputs/{game}_Throws_data.xlsx'
 lstm_csv_path   = f'Thesis/Paralympics2024/{game}/outputs/{game}_Throws_lstm_training.csv'

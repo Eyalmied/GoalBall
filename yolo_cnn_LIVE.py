@@ -661,7 +661,7 @@ from pathlib import Path
 # ==========================
 # ===== USER SETTINGS  =====
 # ==========================
-MODEL_PATH   = "ball+players_tuning10/weights/best.pt"  # <- your trained YOLO weights
+MODEL_PATH   = "ball+players_tuning10/weights/best.pt"  # <- yolo_final deployment model (trained on all data, mAP@0.5=0.974)
 OUTPUT_ROOT  = "Paralkympics2024"                       # <- base folder for outputs
 GAME_NAME    = "TEST1Lve"                               # <- choose a name per half
 CAM_INDEX = 0                                 # <- webcam device index
