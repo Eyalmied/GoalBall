@@ -10,16 +10,14 @@ Computer-vision pipeline for Paralympic Goalball: YOLOv8 player/ball detection �
 GoalBall/
 ├── predict_pipeline_with_YAMNet.py   ← Main inference script (YAMNet crowd-noise scoring)
 ├── predict_pipeline.py               ← Inference script without YAMNet
-├── yolo_cnn_predict_2.py             ← Legacy interactive labelling tool
-├── yolo_cnn_LIVE.py                  ← Live-feed prototype
 ├── requirements.txt
 │
-├── Model Weights/                    ← All deployment model files live here
+├── Model Weights/                    ← Deployment model files (used by both pipelines)
 │   ├── best.pt                       ← YOLOv8 deployment weights (~50 MB)
 │   ├── final_model.pt                ← LSTM deployment model (~2.4 MB)
 │   └── scaler.pkl                    ← StandardScaler fitted on all training data
 │
-├── ball+players_tuning10/            ← Base checkpoint used as YOLO fine-tuning starting point
+├── ball+players_tuning10/            ← Pre-trained base checkpoint; YOLO fine-tuning starts from here
 │   └── weights/best.pt
 │
 ├── app/                              ← Flask analytics dashboard
@@ -34,20 +32,20 @@ GoalBall/
 │           └── <GAME>/outputs/<GAME>_Throws_data.xlsx
 │
 └── Train Model/
-    ├── CNN YOLOv8 Finetune/          ← YOLO data prep, annotation tools, and training
-    │   ├── 1_mov_to_frames.py        ← Step 1: extract frames from video for CVAT
-    │   ├── 2_class2to32.py           ← Step 2: remap class IDs + populate full_data/
-    │   ├── yolo_cnn_predict_2.py     ← Step 3: run YOLO on game video, label segments, output CSVs
-    │   ├── yolo_cnn_LIVE.py          ← Live-feed prototype
-    │   ├── yolo_loocv.py             ← Step 4a: 7-fold LOOCV cross-validation
-    │   ├── yolo_final.py             ← Step 4b: final model on all data → Model Weights/best.pt
+    ├── CNN YOLOv8 Finetune/          ← YOLO annotation pipeline + two independent training options
+    │   ├── 1_mov_to_frames.py        ← Data prep step 1: extract frames from video for CVAT
+    │   ├── 2_class2to32.py           ← Data prep step 2: remap class IDs + populate full_data/
+    │   ├── yolo_loocv.py             ← Training option A: 7-fold LOOCV — evaluate model performance
+    │   ├── yolo_final.py             ← Training option B: train on all data → Model Weights/best.pt
+    │   ├── yolo_cnn_predict_2.py     ← LSTM data tool: use trained YOLO to label game videos → CSVs
+    │   ├── yolo_cnn_LIVE.py          ← LSTM data tool: same as above but for a live camera feed
     │   └── full_data/full_data.yaml
     │
     └── LSTM Training/                ← LSTM data exploration and training
         ├── data_preperation with attention.ipynb
         ├── data_preperation with attention only goals.ipynb
-        ├── train_final.py            ← Train final model on all games → Model Weights/final_model.pt
-        └── k-fold.py                 ← 6-fold LOOCV evaluation
+        ├── k-fold.py                 ← Training option A: 6-fold LOOCV — evaluate model performance
+        └── train_final.py            ← Training option B: train on all games → Model Weights/final_model.pt
 ```
 
 ---
@@ -145,11 +143,13 @@ The dashboard reads data from `app/data/` — the folder is already populated wi
 
 Located in `Train Model/CNN YOLOv8 Finetune/`.
 
-### Step-by-step workflow
+This folder has three distinct purposes — data preparation, model training, and LSTM data generation — which are independent of each other.
 
-**Step 1 — Extract frames from a new game video**
+### Data preparation (run once per new game, in order)
 
-Edit the two path variables at the top of `1_mov_to_frames.py` then run it. It saves one JPEG per second, named `<GAME>_F_image<N>.jpg` — the `_F_image` marker is used by `yolo_loocv.py` to group images by game for LOOCV.
+**Step 1 — Extract frames**
+
+Edit the two path variables at the top of `1_mov_to_frames.py` then run it. Saves one JPEG per second named `<GAME>_F_image<N>.jpg` — the `_F_image` marker lets `yolo_loocv.py` group images by game.
 
 ```bash
 python "Train Model/CNN YOLOv8 Finetune/1_mov_to_frames.py"
@@ -157,48 +157,38 @@ python "Train Model/CNN YOLOv8 Finetune/1_mov_to_frames.py"
 
 **Step 2 — Annotate in CVAT and remap class IDs**
 
-Upload the output folder to [CVAT](https://www.cvat.ai/), annotate:
+Upload the frames to [CVAT](https://www.cvat.ai/) and annotate:
 - Class 0 → `throwing_player`
 - Class 1 → `defending_player`
-- Class 32 → `sports_ball` (CVAT exports as class 2 — the next script fixes this)
+- Class 32 → `sports_ball` (CVAT exports this as class 2 — the next script fixes it)
 
-Export as **YOLO format** (images + `.txt` labels). Then run:
+Export as **YOLO format** (images + `.txt` labels), then run:
 
 ```bash
 python "Train Model/CNN YOLOv8 Finetune/2_class2to32.py"
 ```
 
-This remaps class 2 → 32 and copies everything into `full_data/images/train/` and `full_data/labels/train/`.
+Remaps class 2 → 32 and copies everything into `full_data/images/train/` and `full_data/labels/train/`.
 
-**Step 3 — Run YOLO on a game video, label segments**
+### Model training (two independent options — pick one or both)
 
-```bash
-python "Train Model/CNN YOLOv8 Finetune/yolo_cnn_predict_2.py"
-```
-
-Processes the video with YOLO, lets you validate each detected segment, and writes:
-- `<GAME>_Throws_data.xlsx` — per-throw summary
-- `<GAME>_Throws_lstm_training.csv` — per-frame feature CSV for LSTM training
-
-Edit `game`, `video_path`, `excel_output_path`, and `lstm_csv_path` at the top of the file before running.
-
-**Step 4a — Cross-validate (optional)**
+**Option A — Evaluate via LOOCV**
 
 ```bash
 python "Train Model/CNN YOLOv8 Finetune/yolo_loocv.py"
 ```
 
-Runs 7-fold leave-one-game-out cross-validation. Results saved to `yolo_runs/loocv_results.csv`.
+Runs 7-fold leave-one-game-out cross-validation to measure generalisation performance. Produces metrics and per-fold results in `yolo_runs/loocv_results.csv`. Does **not** produce a deployment model.
 
-**Step 4b — Train the final deployment model**
+**Option B — Train the deployment model**
 
 ```bash
 python "Train Model/CNN YOLOv8 Finetune/yolo_final.py"
 ```
 
-Trains on **all** annotated images. Best weights are automatically copied to `Model Weights/best.pt` — ready to deploy immediately.
+Trains on **all** annotated images and automatically copies the best checkpoint to `Model Weights/best.pt`, ready to deploy in the pipeline immediately.
 
-**Key hyperparameters** (top of `yolo_final.py` / `yolo_loocv.py`):
+**Key hyperparameters** (top of both scripts):
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
@@ -210,6 +200,21 @@ Trains on **all** annotated images. Best weights are automatically copied to `Mo
 | `DEVICE` | 0 | GPU index; `'cpu'` for no-GPU machines |
 
 **LOOCV results (Paris 2024, 7 folds):** mean mAP@0.5 = **0.974**
+
+### Generating LSTM training data from game videos
+
+`yolo_cnn_predict_2.py` and `yolo_cnn_LIVE.py` are **not** YOLO training tools — they use the already-trained YOLO model (`Model Weights/best.pt`) to process a game video, let you interactively validate and label each detected throw segment, and output the per-frame CSVs that the LSTM trains on.
+
+```bash
+python "Train Model/CNN YOLOv8 Finetune/yolo_cnn_predict_2.py"   # recorded video
+python "Train Model/CNN YOLOv8 Finetune/yolo_cnn_LIVE.py"        # live camera
+```
+
+Both write:
+- `<GAME>_Throws_data.xlsx` — per-throw summary
+- `<GAME>_Throws_lstm_training.csv` — per-frame feature CSV for LSTM training
+
+Edit `game`, `video_path`, `excel_output_path`, and `lstm_csv_path` at the top of the file before running.
 
 ---
 
