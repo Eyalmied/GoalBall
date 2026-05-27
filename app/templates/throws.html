@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="hero" style="background-image:url('{{ header_img }}')">
+  <div class="overlay p-3 rounded-3"><h2 class="text-white m-0">Throws Dashboard</h2></div>
+</div>
+
+<form method="get" action="/throws" class="row g-2 my-3">
+  <div class="col-md-6">
+    <label class="form-label">Games (multi)</label>
+    <select name="games" class="form-select" multiple size="6">
+      {% for o in games %}
+        <option value="{{o.value}}" {% if sel_games and (o.value in sel_games) %}selected{% endif %}>{{o.label}}</option>
+      {% endfor %}
+    </select>
+    <small class="text-muted">Tip: Ctrl/Cmd-click to multi-select</small>
+  </div>
+  <div class="col-md-6">
+    <label class="form-label">Teams (multi)</label>
+    <select name="teams" class="form-select" multiple size="6">
+      {% for o in teams %}
+        <option value="{{o.value}}" {% if sel_teams and (o.value in sel_teams) %}selected{% endif %}>{{o.label}}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-12 d-flex gap-2 mt-2">
+    <button class="btn btn-primary">Apply</button>
+    <a class="btn btn-outline-secondary" href="/throws">Reset</a>
+  </div>
+</form>
+
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="kpi card throw-bg text-white">
+      <div class="card-body">
+        <div class="small">Total Throws</div>
+        <div class="display-6 fw-bold">{{ kpis.total_throws }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- LEFT = Pie + TO (Upper then Lower). RIGHT = FROM (Upper then Lower) -->
+<div class="row g-3 mt-1">
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header">
+        Throws by Team
+        <span class="text-muted">• Use the <b>legend</b> or click a <b>slice</b> to toggle • Double-click legend to reset</span>
+      </div>
+      <div class="card-body"><div id="pie_throws_by_team"></div></div>
+    </div>
+
+    <div class="card mt-2">
+      <div class="card-header">To Zone • Upper (1 → 10)</div>
+      <div class="card-body"><div id="to_upper"></div></div>
+    </div>
+    <div class="card mt-2">
+      <div class="card-header">To Zone • Lower (1 → 10)</div>
+      <div class="card-body"><div id="to_lower"></div></div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header">From Zone • Upper (1 → 10)</div>
+      <div class="card-body"><div id="from_upper"></div></div>
+    </div>
+    <div class="card mt-2">
+      <div class="card-header">From Zone • Lower (1 → 10)</div>
+      <div class="card-body"><div id="from_lower"></div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const THROW_ROWS        = {{ throw_records | safe }};
+  const ZONE_TO_RECORDS   = {{ zone_to_records | safe }};
+  const ZONE_FROM_RECORDS = {{ zone_from_records | safe }};
+  const UNIQUE_TEAMS      = {{ unique_teams | safe }};
+
+  // Zones 1..10 for BOTH bands
+  const ZONES_ORDER = Array.from({length: 10}, (_, i) => String(i + 1));
+
+  const PALETTE = ['#636EFA','#EF553B','#00CC96','#AB63FA','#FFA15A','#19D3F3','#FF6692','#B6E880','#FF97FF','#FECB52'];
+  const TEAM_COLORS = {};
+
+  function ensureTeamColors(labels){
+    let i = 0;
+    for(const l of labels){
+      if(!(l in TEAM_COLORS)){
+        TEAM_COLORS[l] = PALETTE[i % PALETTE.length];
+        i++;
+      }
+    }
+  }
+
+  function buildPie(){
+    const counts = new Map();
+    for(const r of THROW_ROWS){
+      const t = r["Throwing Team"]; if(!t) continue;
+      counts.set(t,(counts.get(t)||0)+1);
+    }
+    const labels = Array.from(counts.keys()).sort();
+    ensureTeamColors(labels);
+    const values = labels.map(l => counts.get(l));
+    const colors = labels.map(l => TEAM_COLORS[l]);
+    Plotly.newPlot('pie_throws_by_team', [{
+      type:'pie', labels, values, marker:{colors},
+      textinfo:'percent+label',
+      hovertemplate:'%{label}: %{value} throws (%{percent})<extra></extra>'
+    }], {margin:{t:40}});
+  }
+  buildPie();
+
+  function currentIncludedTeams(){
+    const div = document.getElementById('pie_throws_by_team');
+    const hidden = (div.layout && div.layout.hiddenlabels) || [];
+    const labels = (div.data && div.data[0] && div.data[0].labels) || [];
+    const hiddenSet = new Set(hidden || []);
+    return new Set(labels.filter(l => !hiddenSet.has(l)));
+  }
+  function toggleSlice(label){
+    const div = document.getElementById('pie_throws_by_team');
+    const hidden = new Set((div.layout && div.layout.hiddenlabels) || []);
+    if(hidden.has(label)) hidden.delete(label); else hidden.add(label);
+    return Plotly.relayout(div, {hiddenlabels: Array.from(hidden)});
+  }
+
+  // Build {team -> counts[1..10]} for a given band
+  function zoneCountsByTeam(records, band, included){
+    const perTeam = {};
+    for(const r of records){
+      const t = r["Throwing Team"];
+      const z = r.zone;
+      if(!t || !included.has(t) || r.band !== band || z==null || z<1 || z>10) continue;
+      if(!perTeam[t]) perTeam[t] = new Array(11).fill(0); // index by zone (1..10)
+      perTeam[t][z] += 1;
+    }
+    return perTeam;
+  }
+
+  function tracesFromPerTeam(perTeam){
+    const teams = Object.keys(perTeam).sort();
+    return teams.map(team => {
+      const arr = perTeam[team] || [];
+      const y = ZONES_ORDER.map(z => arr[parseInt(z,10)] || 0);
+      return {
+        type:'bar',
+        name:team,
+        x:ZONES_ORDER,
+        y,
+        marker:{ color: TEAM_COLORS[team] || undefined },
+        hovertemplate:'Team %{fullData.name}<br>Zone %{x}: %{y} throws<extra></extra>'
+      };
+    });
+  }
+
+  function stackMax(perTeam){
+    const totals = ZONES_ORDER.map(_ => 0);
+    for(const team in perTeam){
+      const arr = perTeam[team] || [];
+      ZONES_ORDER.forEach((z,i) => totals[i] += (arr[parseInt(z,10)] || 0));
+    }
+    return Math.max(0, ...totals);
+  }
+
+  function renderAll(){
+    const included = currentIncludedTeams();
+
+    const fUp = zoneCountsByTeam(ZONE_FROM_RECORDS, 'Upper', included);
+    const fUpMax = Math.max(1, stackMax(fUp));
+    Plotly.react('from_upper', tracesFromPerTeam(fUp), {
+      barmode:'stack',
+      xaxis:{title:'From Zone', type:'category', categoryorder:'array', categoryarray:ZONES_ORDER, side:'top'},
+      yaxis:{title:'Count', autorange:'reversed', range:[fUpMax, 0], tickmode:'linear', dtick:5},
+      margin:{t:40}
+    });
+
+    const fLow = zoneCountsByTeam(ZONE_FROM_RECORDS, 'Lower', included);
+    const fLowMax = Math.max(1, stackMax(fLow));
+    Plotly.react('from_lower', tracesFromPerTeam(fLow), {
+      barmode:'stack',
+      xaxis:{title:'From Zone', type:'category', categoryorder:'array', categoryarray:ZONES_ORDER},
+      yaxis:{title:'Count', range:[0, fLowMax], tickmode:'linear', dtick:5},
+      margin:{t:40}
+    });
+
+    const tUp = zoneCountsByTeam(ZONE_TO_RECORDS, 'Upper', included);
+    const tUpMax = Math.max(1, stackMax(tUp));
+    Plotly.react('to_upper', tracesFromPerTeam(tUp), {
+      barmode:'stack',
+      xaxis:{title:'To Zone', type:'category', categoryorder:'array', categoryarray:ZONES_ORDER, side:'top'},
+      yaxis:{title:'Count', autorange:'reversed', range:[tUpMax, 0], tickmode:'linear', dtick:5},
+      margin:{t:40}
+    });
+
+    const tLow = zoneCountsByTeam(ZONE_TO_RECORDS, 'Lower', included);
+    const tLowMax = Math.max(1, stackMax(tLow));
+    Plotly.react('to_lower', tracesFromPerTeam(tLow), {
+      barmode:'stack',
+      xaxis:{title:'To Zone', type:'category', categoryorder:'array', categoryarray:ZONES_ORDER},
+      yaxis:{title:'Count', range:[0, tLowMax], tickmode:'linear', dtick:5},
+      margin:{t:40}
+    });
+  }
+
+  renderAll();
+
+  const pieDiv = document.getElementById('pie_throws_by_team');
+  pieDiv.on('plotly_legendclick', function(){ setTimeout(renderAll, 0); });
+  pieDiv.on('plotly_click', function(e){ if(e?.points?.length){ toggleSlice(e.points[0].label).then(renderAll);} });
+  pieDiv.on('plotly_legenddoubleclick', function(){
+    setTimeout(function(){ Plotly.relayout(pieDiv, {hiddenlabels: []}).then(renderAll); }, 0);
+    return false;
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training images (large — populate via 1_mov_to_frames.py + 2_class2to32.py)
+Train Model/CNN YOLOv8 Finetune/full_data/images/
+Train Model/CNN YOLOv8 Finetune/full_data/labels/
+
+# YOLO run artifacts (per-fold weights, batch images — keep only yolo_final best.pt)
+Train Model/CNN YOLOv8 Finetune/yolo_runs/fold_*/
+Train Model/CNN YOLOv8 Finetune/yolo_runs/yolo_final/train_batch*.jpg
+Train Model/CNN YOLOv8 Finetune/yolo_runs/yolo_final/val_batch*.jpg
+
+# LSTM fold checkpoints (intermediate, not deployment)
+Train Model/LSTM Training/best_fold_*.pt
+
+# App cache
+app/__pycache__/
+
+# Temp outputs from pipeline runs
+*.tmp

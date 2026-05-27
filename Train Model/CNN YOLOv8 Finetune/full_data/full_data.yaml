@@ -1,0 +1,47 @@
+# Dataset config for YOLOv8 fine-tuning on Goalball footage.
+# NOTE: yolo_loocv.py and yolo_final.py each generate their own data.yaml
+#       dynamically — this file is the reference template.
+#
+# Populate full_data/images/train/ and full_data/labels/train/ by running:
+#   1_mov_to_frames.py  (extract frames from video)
+#   2_class2to32.py     (remap class IDs from CVAT, copy to full_data/)
+
+path: ./full_data
+train: images/train
+val: images/train   # loocv.py / final.py manage their own splits at runtime
+
+nc: 33
+names:
+  0: throwing_player
+  1: defending_player
+  2: car
+  3: motorcycle
+  4: airplane
+  5: bus
+  6: train
+  7: truck
+  8: boat
+  9: traffic light
+  10: fire hydrant
+  11: stop sign
+  12: parking meter
+  13: bench
+  14: bird
+  15: cat
+  16: dog
+  17: horse
+  18: sheep
+  19: cow
+  20: elephant
+  21: bear
+  22: zebra
+  23: giraffe
+  24: backpack
+  25: umbrella
+  26: handbag
+  27: tie
+  28: suitcase
+  29: frisbee
+  30: skis
+  31: snowboard
+  32: sports_ball

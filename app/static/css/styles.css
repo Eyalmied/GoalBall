@@ -1,0 +1,39 @@
+:root{
+  --sport-green:#00B894;
+  --sport-dark:#023047;
+}
+body { padding-top: 68px; } /* space for fixed navbar */
+
+.bg-sport{ background:#f1f6fb; }
+.bg-card{ background:#ffffff; }
+
+.hero{
+  height:180px;
+  background-size:cover;
+  background-position:center;
+  border-radius:18px;
+  position:relative;
+  display:flex;
+  align-items:end;
+  margin-bottom:.5rem;
+}
+.hero .overlay{ background:rgba(0,0,0,.4); backdrop-filter:blur(2px); }
+
+.kpi.card{ border-radius:18px; }
+.card{ border-radius:18px; }
+
+.goal-bg{
+  background-image:linear-gradient(135deg, rgba(0,0,0,.2), rgba(0,0,0,.6)), url('/static/images/goal.jpg');
+  background-size:cover;
+}
+.throw-bg{
+  background-image:linear-gradient(135deg, rgba(0,0,0,.2), rgba(0,0,0,.6)), url('/static/images/throw.jpg');
+  background-size:cover;
+}
+
+/* Centered topnav buttons with borders */
+.topnav-btn{
+  border-width:2px !important;
+  border-radius:999px;
+  padding:6px 16px;
+}

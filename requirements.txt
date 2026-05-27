@@ -4,3 +4,12 @@ pandas
 numpy
 openpyxl
 torch
+scikit-learn
+torchmetrics
+matplotlib
+seaborn
+Flask==3.0.3
+plotly==5.24.1
+tensorflow
+tensorflow-hub
+sounddevice
