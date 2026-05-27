@@ -58,8 +58,17 @@ GoalBall/
 
 ```bash
 pip install -r requirements.txt
-# For YAMNet crowd-noise scoring: also needs ffmpeg on PATH
 ```
+
+`ffmpeg` is also required for YAMNet crowd-noise scoring (it extracts audio from video files). It is a system tool — install it once with **one** of the following, then restart your terminal:
+
+| Environment | Command |
+|-------------|---------|
+| Conda (recommended) | `conda install -c conda-forge ffmpeg` |
+| Windows (winget) | `winget install ffmpeg` |
+| Windows (Chocolatey) | `choco install ffmpeg` |
+
+Verify it works: `ffmpeg -version`. If you skip this step the pipeline still runs but every Crowd Noise Score will be 0.0.
 
 ### Run on a recorded game video
 
