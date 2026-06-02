@@ -14,8 +14,11 @@ GoalBall/
 │
 ├── Model Weights/                    ← Deployment model files (used by both pipelines)
 │   ├── best.pt                       ← YOLOv8 deployment weights (~50 MB)
-│   ├── final_model.pt                ← LSTM deployment model (~2.4 MB)
-│   └── scaler.pkl                    ← StandardScaler fitted on all training data
+│   ├── final_model.pt                ← LSTM 23f baseline model (~2.4 MB)
+│   ├── scaler.pkl                    ← StandardScaler for 23f model
+│   ├── final_model_yamnet.pt         ← LSTM 32f YAMNet model (~2.5 MB)
+│   ├── scaler_yamnet.pkl             ← StandardScaler for 32f model
+│   └── yamnet_config.json            ← YAMNet crowd class config (n_crowd=8, indices)
 │
 ├── ball+players_tuning10/            ← Pre-trained base checkpoint; YOLO fine-tuning starts from here
 │   └── weights/best.pt
@@ -41,11 +44,18 @@ GoalBall/
     │   ├── yolo_cnn_LIVE.py          ← LSTM data tool: same as above but for a live camera feed
     │   └── full_data/full_data.yaml
     │
-    └── LSTM Training/                ← LSTM data exploration and training
+    └── LSTM Training/                ← LSTM training — two independent model variants
         ├── data_preperation with attention.ipynb
         ├── data_preperation with attention only goals.ipynb
-        ├── k-fold.py                 ← Training option A: 6-fold LOOCV — evaluate model performance
-        └── train_final.py            ← Training option B: train on all games → Model Weights/final_model.pt
+        │
+        ├── Baseline LSTM/            ← 23 visual features only (no audio)
+        │   ├── k-fold.py             ← LOOCV → mean acc 0.776
+        │   └── train_final.py        ← Train all data → Model Weights/final_model.pt
+        │
+        └── LSTM+YAMNet/              ← 32 features: 23 visual + 8 YAMNet + yam_rel
+            ├── extract_audio_features.py  ← Step 0 (run once): extract YAMNet features → *_yamnet.csv
+            ├── k-fold.py             ← LOOCV → mean acc 0.800
+            └── train_final.py        ← Train all data → Model Weights/final_model_yamnet.pt
 ```
 
 ---
@@ -231,27 +241,51 @@ DATA_ROOT = Path(r"C:\path\to\Paralkympics2024")          # folder with per-game
 GOALS_DIR = Path(r"C:\path\to\Goals_Paralympics\outputs") # goal-clip CSV folder
 ```
 
-### 6-Fold LOOCV (evaluation)
+There are **two independent LSTM variants**. Train whichever you need, or both. `predict_pipeline_with_YAMNet.py` loads both at startup and auto-selects between them at runtime.
+
+### Option A — Baseline LSTM (23 visual features, no audio)
 
 ```bash
-python "Train Model/LSTM Training/k-fold.py"
+# Evaluate:
+python "Train Model/LSTM Training/Baseline LSTM/k-fold.py"
+
+# Train deployment model → Model Weights/final_model.pt
+python "Train Model/LSTM Training/Baseline LSTM/train_final.py"
 ```
 
-Leaves one game out per fold. Prints per-game and per-class metrics; saves confusion matrix and bar charts.
+**Input:** 23 visual features per frame (ball/thrower/defender x,y,w,h,conf + velocity + visibility flags + relative time)  
+**LOOCV result:** mean accuracy = **0.776**
 
-**LOOCV results (6 games):** mean accuracy = **0.776**
+### Option B — LSTM+YAMNet (32 features: visual + crowd audio)
 
-### Final deployment model
+**Step 0 — Extract audio features (run once before k-fold or train_final):**
 
 ```bash
-python "Train Model/LSTM Training/train_final.py"
+python "Train Model/LSTM Training/LSTM+YAMNet/extract_audio_features.py"
 ```
 
-Trains on all 6 games + goal clips. Saves best checkpoint (by accuracy) to `GoalBall/final_model.pt`.
+Runs YAMNet on every game video and goal clip. Requires `ffmpeg` + `tensorflow` / `tensorflow-hub`. Runtime: ~5–10 min. Outputs `*_yamnet.csv` files alongside the scripts — loaded automatically by the training scripts.
 
-**Model architecture:** Bidirectional LSTM (128 hidden, 2 layers) + self-attention + focal loss  
-**Input:** 23 features per frame (ball/thrower/defender x,y,w,h,conf + velocity + visibility flags + relative time)  
-**Classes:** `o1` `o0` `g1` `g0` `b1` `b0` (outcome × throw-label)
+```bash
+# Evaluate:
+python "Train Model/LSTM Training/LSTM+YAMNet/k-fold.py"
+
+# Train deployment model → Model Weights/final_model_yamnet.pt + scaler_yamnet.pkl
+python "Train Model/LSTM Training/LSTM+YAMNet/train_final.py"
+```
+
+**Input:** 32 features = 23 visual + 8 YAMNet crowd-class probs (`yam_0..yam_7`) + 1 relative crowd score (`yam_rel`)  
+**`yam_rel`:** sum of 8 crowd probs per frame ÷ max across the full game — volume-invariant, peak always = 1.0  
+**LOOCV results:**
+
+| Model | Mean Acc | g1 Precision | g1 Recall | g1 F1 |
+|-------|----------|-------------|-----------|-------|
+| Baseline (23f) | 0.776 | 0.407 | 0.422 | 0.414 |
+| 31f (+ yam_0..7) | 0.782 | 0.625 | 0.612 | 0.619 |
+| **32f (+ yam_rel)** | **0.800** | 0.574 | **0.633** | 0.602 |
+
+**Both models share the same BiLSTM architecture** (128 hidden, 2 layers, self-attention, focal loss) — only the input dimension differs.  
+**Automatic routing in `predict_pipeline_with_YAMNet.py`:** if the game's peak YAMNet crowd score > 0.1 → 32f model is used; otherwise → 23f baseline. No manual selection needed.
 
 ---
 
@@ -262,10 +296,15 @@ All deployment weights live in `Model Weights/`:
 | File | Description | Size |
 |------|-------------|------|
 | `Model Weights/best.pt` | YOLOv8 deployment weights | ~50 MB |
-| `Model Weights/final_model.pt` | LSTM deployment model | ~2.4 MB |
-| `Model Weights/scaler.pkl` | StandardScaler for LSTM input normalisation | <1 MB |
+| `Model Weights/final_model.pt` | LSTM 23f baseline model (used when no crowd audio) | ~2.4 MB |
+| `Model Weights/scaler.pkl` | StandardScaler for 23f model | <1 KB |
+| `Model Weights/final_model_yamnet.pt` | LSTM 32f YAMNet model (used when crowd audio detected) | ~2.5 MB |
+| `Model Weights/scaler_yamnet.pkl` | StandardScaler for 32f model | <2 KB |
+| `Model Weights/yamnet_config.json` | YAMNet crowd class indices (n_crowd=8, crowd_idx list) | <1 KB |
 
-`train_final.py` saves directly to `Model Weights/final_model.pt`. `yolo_final.py` copies the best checkpoint to `Model Weights/best.pt` automatically after training.
+`train_final.py` saves directly to `Model Weights/final_model_yamnet.pt` (and `scaler_yamnet.pkl`). `yolo_final.py` copies the best checkpoint to `Model Weights/best.pt` automatically after training.
+
+The prediction pipeline automatically routes each game to the correct LSTM model: if the peak YAMNet crowd score across the full game exceeds 0.1, the 32f YAMNet model is used; otherwise the 23f baseline is used. The two models are loaded at startup — no manual selection required.
 
 ---
 

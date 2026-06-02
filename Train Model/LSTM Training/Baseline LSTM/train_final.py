@@ -1,18 +1,11 @@
 """
-train_final.py - Final deployment LSTM model trained on ALL 6 games + goal clips.
+train_final.py - Final deployment model (baseline, visual features only)
 
-Saves the best checkpoint (by accuracy) to SAVE_PATH.
+Trains on ALL 6 games + goal clips using 23 visual features (no audio).
+Saves:
+  final_model.pt  — deployment weights (23-feature input)
 
-Run
----
-  python "Train Model/LSTM Training/train_final.py"
-
-Data layout expected
---------------------
-  DATA_ROOT/<GAME>/outputs/<GAME>_Throws_lstm_training.csv   (per-game LSTM CSVs)
-  GOALS_DIR/*.csv                                            (goal-clip CSVs)
-
-These CSVs are produced by predict_pipeline_with_YAMNet.py (or yolo_cnn_predict_2.py).
+Outputs to: GoalBall/Model Weights/final_model.pt
 """
 import warnings, numpy as np, pandas as pd
 from pathlib import Path
@@ -25,14 +18,12 @@ import cv2
 
 warnings.filterwarnings("ignore")
 
-_HERE = Path(__file__).resolve().parent    # Train Model/LSTM Training/
-_REPO = _HERE.parent.parent               # GoalBall/
+SCRIPT_DIR = Path(__file__).resolve().parent
+MODEL_WEIGHTS_DIR = SCRIPT_DIR.parent.parent.parent / "Model Weights"
 
-# ── CONFIGURE THESE PATHS ─────────────────────────────────────────────────────
-DATA_ROOT = Path(r"C:\path\to\Paralkympics2024")       # folder with per-game sub-dirs
-GOALS_DIR = Path(r"C:\path\to\Goals_Paralympics\outputs")  # goal-clip CSV folder
-SAVE_PATH = _REPO / "Model Weights" / "final_model.pt" # where to save the trained model
-# ──────────────────────────────────────────────────────────────────────────────
+DATA_ROOT = Path(r"C:\Users\USER\Desktop\Thesis\Paralkympics2024")
+GOALS_DIR = Path(r"C:\Users\USER\Desktop\Thesis\Goals_Paralympics\outputs")
+SAVE_PATH = MODEL_WEIGHTS_DIR / "final_model.pt"
 
 GAMES = ["ISR_-_CAN_5-1","TUR_-_BRA_3-1","TUR_-_ISR_5-4","ISR_-_BRA_8-4","CHI_-_TUR_7-5","BRA_-_TUR_3-3"]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -48,6 +39,7 @@ FEATURE_COLS=["segment_type","rel_t","gap","defender_seen","thrower_seen","ball_
 CLS={('o',1):0,('o',0):1,('g',1):2,('g',0):3,('b',1):4,('b',0):5}
 
 print(f"Device: {DEVICE}")
+print(f"Output: {SAVE_PATH}\n")
 
 def find_video(p):
     gd=p.parent.parent; v=list(gd.glob(f"{gd.name}*.mp4"))+list(gd.glob(f"{gd.name}*.mov"))
@@ -85,13 +77,6 @@ def preprocess(df_raw,W,H):
     return df.drop(columns=["frame","label","outcome"])
 
 def load_csv(csv_path):
-    raw=pd.read_csv(csv_path); tag=csv_path.stem.split("_Throws")[0]
-    raw["segment_uid"]=raw["segment_id"].astype(str).radd(f"{tag}_")
-    raw["throw_uid"]=((raw["segment_id"]+1)//2).astype(str).radd(f"{tag}_")
-    return preprocess(raw,DIMS[csv_path][0] if isinstance(DIMS[csv_path],tuple) else DIMS[csv_path][0],
-                      DIMS[csv_path][1])
-
-def load_csv2(csv_path):
     raw=pd.read_csv(csv_path); tag=csv_path.stem.split("_Throws")[0]
     raw["segment_uid"]=raw["segment_id"].astype(str).radd(f"{tag}_")
     raw["throw_uid"]=((raw["segment_id"]+1)//2).astype(str).radd(f"{tag}_")
@@ -135,8 +120,8 @@ print("Loading all data...")
 parts=[]
 for g in GAMES:
     csv=DATA_ROOT/g/"outputs"/f"{g}_Throws_lstm_training.csv"
-    df=load_csv2(csv); print(f"  {g}: {df['throw_uid'].nunique()} throws"); parts.append(df)
-for f in sorted(GOALS_DIR.glob("*.csv")): parts.append(load_csv2(f))
+    df=load_csv(csv); print(f"  {g}: {df['throw_uid'].nunique()} throws"); parts.append(df)
+for f in sorted(GOALS_DIR.glob("*.csv")): parts.append(load_csv(f))
 df_all=mirror_g1(pd.concat(parts,ignore_index=True))
 print(f"Total after augmentation: {df_all['throw_uid'].nunique()} throws")
 print(df_all.groupby("throw_uid")["class_id"].first().value_counts().sort_index())
@@ -169,7 +154,8 @@ rec_m=MulticlassRecall(num_classes=6,average="none").to(DEVICE)
 f1_m=MulticlassF1Score(num_classes=6,average="macro").to(DEVICE)
 
 BEST=0.0; cooldown=PATIENCE
-print(f"\nTraining on ALL data...\n{'ep':>4}  {'lr':>8}  {'acc':>6}  {'f1':>6}  {'prec_g1':>8}  {'rec_g1':>7}")
+print(f"\nTraining on ALL data  (23 features)...")
+print(f"{'ep':>4}  {'lr':>8}  {'acc':>6}  {'f1':>6}  {'prec_g1':>8}  {'rec_g1':>7}")
 for ep in range(1,N_EPOCHS+1):
     model.train(); tot=correct=loss_sum=0; prec_m.reset(); rec_m.reset(); f1_m.reset()
     for X,lengths,y in loader:
@@ -189,4 +175,4 @@ for ep in range(1,N_EPOCHS+1):
         cooldown-=1
         if cooldown==0: print(f"[STOP] ep{ep} best={BEST:.4f}"); break
 
-print(f"\nFinal model → {SAVE_PATH}\nBest acc: {BEST:.4f}")
+print(f"\nFinal model -> {SAVE_PATH}\nBest acc: {BEST:.4f}")

@@ -17,7 +17,7 @@ A **Flask web dashboard** visualises the aggregated results across games.
 ### Research Context
 - Dataset: 6 Paris 2024 Paralympic Goalball games.
 - YOLO evaluation: 7-fold leave-one-game-out cross-validation, mean mAP@0.5 = **0.974**.
-- LSTM evaluation: 6-fold leave-one-game-out cross-validation, mean accuracy = **0.776**.
+- LSTM evaluation: 6-fold leave-one-game-out cross-validation, mean accuracy = **0.800** (32f YAMNet model; 23f baseline = 0.776).
 - Final deployment model: trained on all 6 games + goal-clip augmentation.
 
 ---
@@ -33,8 +33,11 @@ GoalBall/
 │
 ├── Model Weights/                       ← Deployment model files
 │   ├── best.pt                          ← YOLOv8 weights (~50 MB)
-│   ├── final_model.pt                   ← LSTM weights (~2.4 MB)
-│   └── scaler.pkl                       ← StandardScaler (~1.4 KB, auto-generated on first run)
+│   ├── final_model.pt                   ← LSTM 23f baseline weights (~2.4 MB)
+│   ├── scaler.pkl                       ← StandardScaler for 23f model (~1.4 KB)
+│   ├── final_model_yamnet.pt            ← LSTM 32f YAMNet weights (~2.5 MB)
+│   ├── scaler_yamnet.pkl                ← StandardScaler for 32f model (~1.7 KB)
+│   └── yamnet_config.json              ← YAMNet crowd class config (n_crowd=8, crowd_idx list)
 │
 ├── app/                                 ← Flask web dashboard
 │   ├── app.py                           ← Flask routes
@@ -68,11 +71,18 @@ GoalBall/
 │   │   │   └── full_data.yaml           ← YOLO dataset config template
 │   │   └── yolo_runs/                   ← Training run outputs (auto-created)
 │   │
-│   └── LSTM Training/                   ← LSTM training scripts
-│       ├── train_final.py               ← Step 5a: train LSTM on all games → final_model.pt
-│       ├── k-fold.py                    ← Step 5b: 6-fold LOOCV evaluation of LSTM
+│   └── LSTM Training/                   ← Two independent LSTM variants
 │       ├── data_preperation with attention.ipynb
-│       └── data_preperation with attention only goals.ipynb
+│       ├── data_preperation with attention only goals.ipynb
+│       │
+│       ├── Baseline LSTM/               ← 23-feature model (visual only, no audio)
+│       │   ├── k-fold.py                ← Step 5b option A: LOOCV → mean acc 0.776
+│       │   └── train_final.py           ← Step 5a option A: train → final_model.pt
+│       │
+│       └── LSTM+YAMNet/                 ← 32-feature model (visual + YAMNet crowd audio)
+│           ├── extract_audio_features.py ← Prerequisite: YAMNet features → *_yamnet.csv
+│           ├── k-fold.py                ← Step 5b option B: LOOCV → mean acc 0.800
+│           └── train_final.py           ← Step 5a option B: train → final_model_yamnet.pt
 │
 └── ball+players_tuning10/               ← Pre-trained YOLO checkpoint (base for fine-tuning)
     ├── weights/best.pt
@@ -139,23 +149,15 @@ All three files live in `Model Weights/` and are committed to the repository.
 | File | Size | Purpose | Required for |
 |------|------|---------|-------------|
 | `best.pt` | ~50 MB | YOLOv8n fine-tuned for ball (class 32) + throwing player (class 0) + defending player (class 1) detection | Both pipeline scripts, `yolo_cnn_predict_2.py`, `yolo_cnn_LIVE.py` |
-| `final_model.pt` | ~2.4 MB | Bidirectional LSTM (128 hidden × 2 layers) for 6-class throw outcome classification | Both pipeline scripts |
-| `scaler.pkl` | ~1.4 KB | Fitted `sklearn.StandardScaler` that normalizes 23 LSTM input features to zero mean / unit variance | Both pipeline scripts; auto-generated on first run if missing |
+| `final_model.pt` | ~2.4 MB | Bidirectional LSTM (128 hidden × 2 layers), 23-feature input — used when no crowd audio detected | Both pipeline scripts |
+| `scaler.pkl` | ~1.4 KB | Fitted `sklearn.StandardScaler` for 23 LSTM input features | Both pipeline scripts |
+| `final_model_yamnet.pt` | ~2.5 MB | Bidirectional LSTM (128 hidden × 2 layers), 32-feature input (23 visual + 8 YAMNet + yam_rel) — used when crowd audio detected | `predict_pipeline_with_YAMNet.py` |
+| `scaler_yamnet.pkl` | ~1.7 KB | Fitted `sklearn.StandardScaler` for all 32 LSTM input features | `predict_pipeline_with_YAMNet.py` |
+| `yamnet_config.json` | <1 KB | YAMNet crowd class indices (`n_crowd`, `crowd_idx` list) — determines which of YAMNet's 521 classes are used | `predict_pipeline_with_YAMNet.py`, `extract_audio_features.py` |
 
-### scaler.pkl Auto-Generation
-On first run, if `scaler.pkl` does not exist:
-1. The script reads all 6 training CSVs from `TRAIN_DATA_ROOT/{GAME}/outputs/{GAME}_Throws_lstm_training.csv`.
-2. Reads goal-clip CSVs from `TRAIN_GOALS_DIR/*.csv`.
-3. Fits `StandardScaler` on the combined 23-feature matrix.
-4. Saves to `Model Weights/scaler.pkl`.
+All six files are committed to the repository. End-users do not need any training data to run inference.
 
-After `scaler.pkl` exists, training data paths are never read again. If you ship `scaler.pkl` with the repo (it is committed), end-users do not need any training data.
-
-**Override training-data paths** (only relevant when regenerating `scaler.pkl`):
-```bash
-export GOALBALL_TRAIN_ROOT=/path/to/Paralkympics2024
-export GOALBALL_GOALS_DIR=/path/to/Goals_Paralympics/outputs
-```
+**Routing logic (automatic):** `predict_pipeline_with_YAMNet.py` loads both LSTM models at startup. After audio extraction, it runs YAMNet on the full waveform and computes `_game_max_crowd = max(patch_scores)`. If `_game_max_crowd > 0.1`, the 32f YAMNet model is used; otherwise the 23f baseline. The threshold 0.1 has a clean empirical gap: real tournament games peak > 0.99; silent recordings peak < 0.007.
 
 ---
 
@@ -199,9 +201,13 @@ Zone computation:
 
 ---
 
-## 23 LSTM Input Features
+## LSTM Input Features
 
-These features must match **exactly** between `predict_pipeline.py` (inference) and `train_final.py` (training). Any mismatch will silently degrade accuracy.
+There are two feature sets. The pipeline automatically selects the correct one.
+
+### 23-Feature Baseline (used when no crowd audio)
+
+Used by `predict_pipeline.py` (always) and `predict_pipeline_with_YAMNet.py` (when `_game_max_crowd ≤ 0.1`).
 
 ```python
 FEATURE_COLS = [
@@ -230,6 +236,24 @@ FEATURE_COLS = [
     "defender_conf",     # YOLO confidence for defender
 ]
 ```
+
+### 32-Feature YAMNet Model (used when crowd audio detected)
+
+Used by `predict_pipeline_with_YAMNet.py` when `_game_max_crowd > 0.1`. The 9 audio features are appended after the 23 visual features:
+
+```python
+YAMNET_COLS = [
+    "yam_0",   # YAMNet crowd class 0 probability
+    "yam_1",   # YAMNet crowd class 1 probability
+    ...
+    "yam_7",   # YAMNet crowd class 7 probability  (8 crowd-class probs total)
+    "yam_rel", # sum(yam_0..7) per frame / max(sum) across all frames in game
+               # volume-invariant relative crowd score; peak = 1.0 at loudest moment
+]
+FEATURE_COLS = VISUAL_COLS + YAMNET_COLS  # 23 + 8 + 1 = 32 total
+```
+
+**`yam_rel` motivation:** YAMNet uses a log mel spectrogram so its output shifts with recording volume — a quiet real crowd scores lower in absolute terms than a loud one. `yam_rel` normalises this: the loudest crowd moment in any game always scores 1.0, making the feature comparable across recordings with different volume levels.
 
 Missing detections are **forward-filled** then **backward-filled**; remaining NaN after filling → 0.
 
@@ -324,10 +348,11 @@ python predict_pipeline_with_YAMNet.py
 
 **Audio processing:**
 1. `ffmpeg` extracts mono 16 kHz WAV from the video file.
-2. For each throw, a time window `[TO_start, TO_end + 3s]` is scored.
-3. YAMNet produces class-score vectors at 0.48 s intervals; scores for crowd-related classes are averaged.
-4. Crowd keywords matched: `["cheer", "applause", "crowd", "yell", "shout", "whoop", "scream"]`.
-5. Score = mean probability of matched classes across the window.
+2. YAMNet runs once on the full waveform → `_yamnet_patch_scores` (n_patches × 8) cached in memory.
+3. **Model routing:** `_game_max_crowd = max(_yamnet_patch_scores)`. If > 0.1 → use 32f YAMNet model (`final_model_yamnet.pt` + `scaler_yamnet.pkl`); else → use 23f baseline. Threshold 0.1 has a clean empirical gap (real tournament games peak > 0.99; silent recordings peak < 0.007).
+4. **LSTM features (32f path):** `yamnet_per_frame_features(frame_numbers)` maps frame numbers to patch indices via `patch_idx = round(frame / fps / 0.48)`, returns (n_frames, 9) array of `[yam_0..7, yam_rel]` where `yam_rel = yam_sum / game_max_sum`.
+5. **Crowd Noise Score column:** for each throw, time window `[TO_start, TO_end + 3s]` is scored using the cached patch scores — no second YAMNet pass needed. Score = mean probability of crowd-class probs across the window.
+6. Crowd keywords matched: `["cheer", "applause", "crowd", "yell", "shout", "whoop", "scream"]`.
 
 **Graceful fallback:** If `ffmpeg` is missing, TensorFlow is not installed, or audio extraction fails, all crowd-noise scores are set to `0.0` and the pipeline continues without error.
 
@@ -533,15 +558,75 @@ Camera feed is saved to `Pipeline_Outputs/{GAME}/{GAME}_live_recording.mp4` in r
 
 ## Training: LSTM Throw-Outcome Classifier
 
-### Step 5a — Train LSTM (All Data → Deployment Model)
+There are **two independent model variants** under `Train Model/LSTM Training/`. Each has its own subfolder with its own `k-fold.py` and `train_final.py`. `predict_pipeline_with_YAMNet.py` loads both at startup and routes automatically.
 
-**Script:** `Train Model/LSTM Training/train_final.py`
+---
+
+### Baseline LSTM — `Train Model/LSTM Training/Baseline LSTM/`
+
+23 visual features, no audio. Used by the pipeline when crowd audio is absent or silent.
+
+**Step 5a (Baseline) — Train deployment model:**
+
+**Script:** `Train Model/LSTM Training/Baseline LSTM/train_final.py`
 
 **Configure at top of file:**
 ```python
-DATA_ROOT = Path(r"C:\path\to\Paralkympics2024")   # folder containing per-game subfolders
-GOALS_DIR = Path(r"C:\path\to\Goals_Paralympics\outputs")   # goal-clip CSVs for augmentation
-SAVE_PATH = _REPO / "Model Weights" / "final_model.pt"
+DATA_ROOT = Path(r"C:\path\to\Paralkympics2024")
+GOALS_DIR = Path(r"C:\path\to\Goals_Paralympics\outputs")
+# SAVE_PATH is auto-resolved to GoalBall/Model Weights/final_model.pt
+```
+
+```bash
+python "Train Model/LSTM Training/Baseline LSTM/train_final.py"
+```
+
+**Output:** `Model Weights/final_model.pt` (save path auto-resolved via `SCRIPT_DIR.parent.parent.parent`).
+
+**Step 5b (Baseline) — Evaluate via LOOCV:**
+
+```bash
+python "Train Model/LSTM Training/Baseline LSTM/k-fold.py"
+```
+
+**Reported result: mean accuracy = 0.776**
+
+---
+
+### LSTM+YAMNet — `Train Model/LSTM Training/LSTM+YAMNet/`
+
+32 features: 23 visual + 8 YAMNet crowd probs + 1 `yam_rel`. Used by the pipeline when crowd audio is detected.
+
+### Step 5 Prerequisite — Extract YAMNet Audio Features (run once)
+
+**Script:** `Train Model/LSTM Training/LSTM+YAMNet/extract_audio_features.py`
+
+Runs YAMNet on every game video and goal clip; writes one `*_yamnet.csv` per source CSV in the same `LSTM+YAMNet/` folder. `k-fold.py` and `train_final.py` load these CSVs automatically; if a file is missing they fall back to zeros with a warning.
+
+**Requirements:** `tensorflow`, `tensorflow-hub`, `ffmpeg` on PATH. Runtime: ~5–10 minutes.
+
+```bash
+python "Train Model/LSTM Training/LSTM+YAMNet/extract_audio_features.py"
+```
+
+**Configure at top of file:**
+```python
+DATA_ROOT  = Path(r"C:\path\to\Paralkympics2024")
+GOALS_ROOT = Path(r"C:\path\to\Goals_Paralympics")
+```
+
+---
+
+### Step 5a (YAMNet) — Train LSTM+YAMNet Deployment Model
+
+**Script:** `Train Model/LSTM Training/LSTM+YAMNet/train_final.py`
+
+**Configure at top of file:**
+```python
+DATA_ROOT = Path(r"C:\path\to\Paralkympics2024")
+GOALS_DIR = Path(r"C:\path\to\Goals_Paralympics\outputs")
+# SAVE_MODEL and SAVE_SCALER are auto-resolved to GoalBall/Model Weights/
+```
 
 GAMES = [
     "ISR_-_CAN_5-1", "TUR_-_BRA_3-1", "TUR_-_ISR_5-4",
@@ -559,7 +644,7 @@ DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
 
 **Run:**
 ```bash
-python "Train Model/LSTM Training/train_final.py"
+python "Train Model/LSTM Training/LSTM+YAMNet/train_final.py"
 ```
 
 **Data loading:**
@@ -583,7 +668,7 @@ CLS = {
 **Model architecture:**
 ```python
 class ThrowLSTM(nn.Module):
-    n = 23          # input features
+    n = 32          # input features (23 visual + 8 YAMNet crowd probs + 1 yam_rel)
     h = 128         # hidden size per LSTM direction
     l = 2           # LSTM layers
     c = 6           # output classes
@@ -599,17 +684,17 @@ class ThrowLSTM(nn.Module):
 - **LR scheduler:** `ReduceLROnPlateau` (factor=0.3, patience=3).
 - **Early stopping:** Patience=10 on validation accuracy.
 
-**Output:** `Model Weights/final_model.pt` (best checkpoint).
+**Output:** `Model Weights/final_model_yamnet.pt` + `Model Weights/scaler_yamnet.pkl` (best checkpoint, auto-resolved to `GoalBall/Model Weights/`).
 
 Console prints per epoch: accuracy, macro-F1, goal-class precision, goal-class recall.
 
 ---
 
-### Step 5b — Evaluate LSTM (6-fold LOOCV)
+### Step 5b (YAMNet) — Evaluate via LOOCV
 
-**Script:** `Train Model/LSTM Training/k-fold.py`
+**Script:** `Train Model/LSTM Training/LSTM+YAMNet/k-fold.py`
 
-**Configure at top of file** (same paths and game list as `train_final.py`):
+**Configure at top of file** (same paths as `train_final.py`):
 ```python
 DATA_ROOT = Path(r"C:\path\to\Paralkympics2024")
 GOALS_DIR = Path(r"C:\path\to\Goals_Paralympics\outputs")
@@ -617,7 +702,7 @@ GOALS_DIR = Path(r"C:\path\to\Goals_Paralympics\outputs")
 
 **Run:**
 ```bash
-python "Train Model/LSTM Training/k-fold.py"
+python "Train Model/LSTM Training/LSTM+YAMNet/k-fold.py"
 ```
 
 **Strategy:** For each of 6 games: that game is the test fold; all other 5 games + goal clips form the training fold. A fresh LSTM is trained per fold (30 epochs, patience=10).
@@ -628,7 +713,13 @@ python "Train Model/LSTM Training/k-fold.py"
 - `plot_confusion_matrix_heatmap.png` — aggregated confusion matrix across all folds.
 - `plot_metrics_per_class.png` — bar chart of per-class metrics.
 
-**Reported result: mean accuracy = 0.776**.
+**Reported results (32f YAMNet model):**
+
+| Model | Mean Acc | g1 Precision | g1 Recall | g1 F1 |
+|-------|----------|-------------|-----------|-------|
+| Baseline 23f | 0.776 | 0.407 | 0.422 | 0.414 |
+| 31f (+yam_0..7) | 0.782 | 0.625 | 0.612 | 0.619 |
+| **32f (+yam_rel)** | **0.800** | 0.574 | **0.633** | 0.602 |
 
 ---
 
@@ -703,7 +794,16 @@ Aggregated goal records across all games, used by the `/goals` Flask route.
 6. python yolo_final.py              → trains/updates YOLO → best.pt
 7. python yolo_cnn_predict_2.py      → runs YOLO, user labels outcomes
                                         → {GAME}_Throws_lstm_training.csv
-8. python train_final.py             → trains/updates LSTM → final_model.pt
+
+8a. (Baseline model)
+    python "Baseline LSTM/train_final.py"   → Model Weights/final_model.pt
+
+8b. (YAMNet model — requires audio)
+    python "LSTM+YAMNet/extract_audio_features.py"  → *_yamnet.csv (run once)
+    python "LSTM+YAMNet/train_final.py"             → Model Weights/final_model_yamnet.pt
+
+    predict_pipeline_with_YAMNet.py auto-selects between the two at runtime.
+    (Both models can coexist in Model Weights/ — train both for full coverage.)
 ```
 
 ### For Analyzing a New Game (Inference, No New Training)

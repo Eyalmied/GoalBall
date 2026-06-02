@@ -63,8 +63,13 @@ except ImportError:
 SCRIPT_DIR   = Path(__file__).resolve().parent
 WEIGHTS_DIR  = SCRIPT_DIR / "Model Weights"
 YOLO_WEIGHTS = WEIGHTS_DIR / "best.pt"
-LSTM_WEIGHTS = WEIGHTS_DIR / "final_model.pt"
+LSTM_WEIGHTS = WEIGHTS_DIR / "final_model.pt"         # 23-feature baseline
 SCALER_CACHE = WEIGHTS_DIR / "scaler.pkl"
+LSTM_WEIGHTS_32 = WEIGHTS_DIR / "final_model_yamnet.pt"  # 32-feature (visual+YAMNet+yam_rel)
+SCALER_CACHE_32 = WEIGHTS_DIR / "scaler_yamnet.pkl"
+YAMNET_CFG      = WEIGHTS_DIR / "yamnet_config.json"
+YAMNET_HOP_S    = 0.48   # YAMNet patch hop — must match extract_audio_features.py
+YAMNET_ROUTING_THRESHOLD = 0.1  # max raw crowd score above this → use 32f model
 
 # If True, after the Excel is written, replay each throw (from+to frames)
 # with YOLO bounding boxes overlaid. Press any key to advance to the next
@@ -308,11 +313,27 @@ def _find_crowd_class_indices(yamnet_model):
 # ===================================================================
 log(f"[YOLO] loading {YOLO_WEIGHTS}")
 yolo = YOLO(YOLO_WEIGHTS)
-log(f"[LSTM] loading {LSTM_WEIGHTS}")
-lstm = ThrowLSTM().to(DEVICE)
+log(f"[LSTM-23f] loading {LSTM_WEIGHTS}")
+lstm = ThrowLSTM(n=23).to(DEVICE)
 lstm.load_state_dict(torch.load(LSTM_WEIGHTS, map_location=DEVICE))
 lstm.eval()
 scaler = fit_scaler()
+
+# 32-feature YAMNet model — loaded if weights present
+import json as _json
+lstm_32 = None; scaler_32 = None; _N_CROWD_32 = 8
+if LSTM_WEIGHTS_32.exists() and SCALER_CACHE_32.exists():
+    if YAMNET_CFG.exists():
+        with open(YAMNET_CFG) as _f:
+            _N_CROWD_32 = _json.load(_f)["n_crowd"]
+    lstm_32 = ThrowLSTM(n=23 + _N_CROWD_32 + 1).to(DEVICE)   # 23 visual + 8 crowd + 1 yam_rel
+    lstm_32.load_state_dict(torch.load(LSTM_WEIGHTS_32, map_location=DEVICE))
+    lstm_32.eval()
+    with open(SCALER_CACHE_32, "rb") as _f:
+        scaler_32 = pickle.load(_f)
+    log(f"[LSTM-32f] loaded {LSTM_WEIGHTS_32.name}  (23 visual + {_N_CROWD_32} YAMNet + yam_rel)")
+else:
+    log(f"[LSTM-32f] weights not found — will use 23f baseline for all games")
 
 # ===================================================================
 #  CALIBRATION FRAME + USER INPUTS (teams, halftime)
@@ -365,10 +386,13 @@ else:
     log(f"[INFO] Halftime frame: {halftime_frame}")
 
 # --- YAMNet: load model + extract full-video audio once ---
-_yamnet_model      = None
-_yamnet_crowd_idx  = []
-_audio_waveform    = None
-_audio_tmp_wav     = None
+_yamnet_model           = None
+_yamnet_crowd_idx       = []
+_audio_waveform         = None
+_audio_tmp_wav          = None
+_yamnet_patch_scores    = None   # (n_patches, N_CROWD) — full video, used for LSTM features
+USE_YAMNET_MODEL        = False  # set after audio load; routes predict_outcome to 32f or 23f
+_game_max_crowd         = 0.0
 
 if _YAMNET_AVAILABLE:
     log("[YAMNet] loading model from TF Hub (first run downloads ~13 MB)...")
@@ -384,23 +408,65 @@ if _YAMNET_AVAILABLE:
             _audio_waveform = _load_wav_mono16k(_audio_tmp_wav)
             log(f"[YAMNet] audio loaded: {len(_audio_waveform)/16000:.1f}s at 16 kHz  "
                 f"| samples={len(_audio_waveform)}  min={_audio_waveform.min():.4f}  max={_audio_waveform.max():.4f}")
+            # Pre-compute all patch scores for the full video (used for routing + LSTM features)
+            if lstm_32 is not None and _yamnet_crowd_idx:
+                log("[LSTM-32f] scoring full-video audio for routing decision...")
+                _scores_full, _, _ = _yamnet_model(_audio_waveform)
+                _yamnet_patch_scores = _scores_full.numpy()[:, _yamnet_crowd_idx]  # (n_patches, N_CROWD)
+                _game_max_crowd = float(_yamnet_patch_scores.max())
+                if _game_max_crowd > YAMNET_ROUTING_THRESHOLD:
+                    USE_YAMNET_MODEL = True
+                    log(f"[LSTM-32f] max crowd={_game_max_crowd:.4f} > {YAMNET_ROUTING_THRESHOLD}"
+                        f" → routing to 32-feature model")
+                else:
+                    log(f"[LSTM-32f] max crowd={_game_max_crowd:.4f} ≤ {YAMNET_ROUTING_THRESHOLD}"
+                        f" → silent/quiet video, using 23f baseline")
         else:
             log("[YAMNet] ffmpeg failed — ffmpeg must be on PATH. Crowd Noise Score will be 0.0")
 
 _yamnet_debug_done = False   # log detailed info for the first throw only
 
+def yamnet_per_frame_features(frame_numbers):
+    """Return (n_frames, N_CROWD+1) float32 array: per-frame crowd probs + yam_rel.
+    yam_rel = sum(crowd_probs) / max(sum(crowd_probs)) across the whole game — volume-invariant.
+    Returns zeros if full-video patch scores are not available."""
+    n       = len(frame_numbers)
+    n_crowd = len(_yamnet_crowd_idx)
+    if _yamnet_patch_scores is None or n_crowd == 0:
+        return np.zeros((n, n_crowd + 1), dtype=np.float32)
+    n_patches = _yamnet_patch_scores.shape[0]
+    time_s    = np.array(frame_numbers, dtype=float) / fps
+    pidx      = np.clip(np.round(time_s / YAMNET_HOP_S).astype(int), 0, n_patches - 1)
+    crowd     = _yamnet_patch_scores[pidx]                          # (n, N_CROWD)
+    yam_sum   = crowd.sum(axis=1)                                   # (n,)
+    game_max  = float(_yamnet_patch_scores.sum(axis=1).max())
+    yam_rel   = (yam_sum / (game_max + 1e-8)).reshape(-1, 1)       # (n, 1)
+    return np.concatenate([crowd, yam_rel], axis=1).astype(np.float32)
+
 def yamnet_crowd_score(t):
-    """Score crowd noise over the throw's TO segment + YAMNET_POST_SECONDS."""
+    """Score crowd noise over the throw's TO segment + YAMNET_POST_SECONDS.
+    Uses pre-computed patch scores when available (faster than re-running YAMNet per throw)."""
     global _yamnet_debug_done
-    if _yamnet_model is None:
-        return 0.0
-    if _audio_waveform is None:
-        return 0.0
-    if t['to'] is None:
+    if _yamnet_model is None or _audio_waveform is None or t['to'] is None:
         return 0.0
     to_frames = t['to']['frames']
-    start_sec  = to_frames[0]  / fps
-    end_sec    = to_frames[-1] / fps + YAMNET_POST_SECONDS
+    start_sec = to_frames[0]  / fps
+    end_sec   = to_frames[-1] / fps + YAMNET_POST_SECONDS
+
+    # Fast path: use pre-computed full-video patch scores
+    if _yamnet_patch_scores is not None and _yamnet_crowd_idx:
+        n_patches = _yamnet_patch_scores.shape[0]
+        ps = max(0, int(round(start_sec / YAMNET_HOP_S)))
+        pe = min(n_patches, int(round(end_sec   / YAMNET_HOP_S)) + 1)
+        if ps >= pe:
+            return 0.0
+        crowd_score = float(_yamnet_patch_scores[ps:pe].max())
+        if not _yamnet_debug_done:
+            log(f"[YAMNet][DEBUG] throw {t['num']}: patches {ps}–{pe}  crowd={crowd_score:.4f}")
+            _yamnet_debug_done = True
+        return crowd_score
+
+    # Fallback: run YAMNet on the per-throw audio clip (original behaviour)
     s = int(start_sec * 16000)
     e = int(min(end_sec * 16000, len(_audio_waveform)))
     clip = _audio_waveform[s:e]
@@ -409,20 +475,14 @@ def yamnet_crowd_score(t):
             f"clip_samples={len(clip)}  clip_max={clip.max():.4f}")
     if len(clip) < 3200:
         if not _yamnet_debug_done:
-            log(f"[YAMNet][DEBUG] clip too short (<0.2s) — returning 0.0")
             _yamnet_debug_done = True
         return 0.0
     scores, _, _ = _yamnet_model(clip)
     mean_scores  = scores.numpy().mean(axis=0)
     if not _yamnet_crowd_idx:
-        if not _yamnet_debug_done:
-            log("[YAMNet][DEBUG] crowd index list is empty — returning 0.0")
-            _yamnet_debug_done = True
         return 0.0
     crowd_score = float(max(mean_scores[i] for i in _yamnet_crowd_idx))
     if not _yamnet_debug_done:
-        top5 = sorted(enumerate(mean_scores), key=lambda x: -x[1])[:5]
-        log(f"[YAMNet][DEBUG] top-5 classes: {[(i, round(float(v),4)) for i,v in top5]}")
         log(f"[YAMNet][DEBUG] crowd score for throw {t['num']}: {crowd_score:.6f}")
         _yamnet_debug_done = True
     return crowd_score
@@ -722,13 +782,16 @@ if MERGE_DUPLICATE_THROWS and len(throws) > 1:
 # ===================================================================
 #  LSTM INFERENCE per throw
 # ===================================================================
-log(f"[LSTM] predicting outcomes for {len(throws)} throws...")
+_model_tag = f"32f YAMNet (max crowd={_game_max_crowd:.3f})" if USE_YAMNET_MODEL else "23f baseline (no/quiet audio)"
+log(f"[LSTM] predicting outcomes for {len(throws)} throws  |  model: {_model_tag}")
 
 def predict_outcome(t):
-    """Returns (outcome_name, softmax_confidence, class_label) or ('', 0.0, '') if incomplete."""
+    """Returns (outcome_name, softmax_confidence, class_label) or ('', 0.0, '') if incomplete.
+    Routes to 32-feature YAMNet model when USE_YAMNET_MODEL is True, else 23-feature baseline."""
     if t['from'] is None or t['to'] is None:
         return '', 0.0, ''
     rows = []
+    all_frames = []
     for seg, st in [(t['from'],'from'), (t['to'],'to')]:
         sid = segment_id_of[id(seg)]
         for f in seg['frames']:
@@ -736,15 +799,30 @@ def predict_outcome(t):
             r = {'segment_id': sid, 'segment_type': st, 'frame': f}
             r.update({k:v for k,v in ff.items() if k not in ('frame','label')})
             rows.append(r)
+            all_frames.append(f)
     df = pd.DataFrame(rows)
     df = clean_throw(df, W, H)
-    df[FEATURE_COLS] = df[FEATURE_COLS].fillna(0)
-    feat = scaler.transform(df[FEATURE_COLS]).astype("float32")
+
+    if USE_YAMNET_MODEL:
+        yam_feat = yamnet_per_frame_features(all_frames)       # (n, N_CROWD+1)
+        n_crowd  = yam_feat.shape[1] - 1
+        yam_cols = [f"yam_{i}" for i in range(n_crowd)] + ["yam_rel"]
+        for j, col in enumerate(yam_cols):
+            df[col] = yam_feat[:, j]
+        feat_cols = FEATURE_COLS + yam_cols
+        df[feat_cols] = df[feat_cols].fillna(0)
+        feat       = scaler_32.transform(df[feat_cols]).astype("float32")
+        model_use  = lstm_32
+    else:
+        df[FEATURE_COLS] = df[FEATURE_COLS].fillna(0)
+        feat      = scaler.transform(df[FEATURE_COLS]).astype("float32")
+        model_use = lstm
+
     x = torch.tensor(feat).unsqueeze(0).to(DEVICE)
     L = torch.tensor([x.size(1)], dtype=torch.int64)
     with torch.no_grad():
-        logits = lstm(x, L)
-        probs = torch.softmax(logits, dim=1)
+        logits = model_use(x, L)
+        probs  = torch.softmax(logits, dim=1)
         conf, cls_id = probs.max(dim=1)
     cls_int = int(cls_id)
     return OUTCOME_NAMES[CLS_TO_OUTCOME[cls_int]], float(conf), CLS_LABELS[cls_int]
