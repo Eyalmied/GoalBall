@@ -902,9 +902,20 @@ for t in throws:
     n_frames, ball_rate = throw_stats.get(num, (0, 0.0))
     start_seconds = t['from']['frames'][0] / fps
     start_time_str = f"{int(start_seconds // 60):02d}:{int(start_seconds % 60):02d}"
+    # Throw frame span (excludes the 80-frame 'to' extension): first thrower frame ->
+    # last frame in the 'to' segment where the defender is actually detected.
+    start_frame = t['from']['frames'][0]
+    if t['to'] is not None:
+        _def_frames = [f for f in t['to']['frames'] if frame_features[f-1]['defender_x'] is not None]
+        end_frame = max(_def_frames) if _def_frames else t['to']['frames'][0]
+    else:
+        _def_frames = [f for f in t['from']['frames'] if frame_features[f-1]['defender_x'] is not None]
+        end_frame = max(_def_frames) if _def_frames else t['from']['frames'][-1]
     results.append({
         'Throw Number':         num,
         'Start Time (mm:ss)':   start_time_str,
+        'Start Frame':          start_frame,
+        'End Frame':            end_frame,
         'From Zone':            fz_label,
         'To Zone':              tz_label,
         'Throwing Team':        throwing,
