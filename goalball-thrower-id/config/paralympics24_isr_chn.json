@@ -1,0 +1,25 @@
+{
+  "name": "Paralympics 2024 semi-final - Israel 2 : 1 China",
+
+  "video":  "../Paralympics24_SF_Israel2_China1.MP4",
+  "events": "../Paralympics24_SF_Israel2_China1_Throws_data_predicted.csv",
+
+  "gallery_dir": "gallery_isr_chn",
+  "court_file":  "court_isr_chn.json",
+  "labels":      "labels_isr_chn.csv",
+  "predictions": "predictions_isr_chn.json",
+
+  "pose_model": "yolov8m-pose.pt",
+  "ball_model": "yolov8m.pt",
+
+  "half2_start": "22:00",
+
+  "roster": {
+    "1": {"name": "ISR-A", "team": "ISR"},
+    "2": {"name": "ISR-B", "team": "ISR"},
+    "3": {"name": "ISR-C", "team": "ISR"},
+    "4": {"name": "CHN-A", "team": "CHN"},
+    "5": {"name": "CHN-B", "team": "CHN"},
+    "6": {"name": "CHN-C", "team": "CHN"}
+  }
+}

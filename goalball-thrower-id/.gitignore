@@ -1,0 +1,40 @@
+# Match data - too big for git, and not ours to redistribute.
+*.mp4
+*.MP4
+*.mov
+*.MOV
+*.avi
+*.mkv
+
+# Model weights - fetched by ultralytics on first use.
+*.pt
+*.pth
+*.onnx
+
+# Per-match outputs.
+gallery*/
+court*.json
+predictions*.json
+*_predictions.json
+labels*.csv
+thrower_labels.csv
+review*/
+*.json.tmp
+*.csv.tmp
+
+# Keep the config templates, ignore personal ones.
+!config/example.json
+!config/paralympics24_isr_chn.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store

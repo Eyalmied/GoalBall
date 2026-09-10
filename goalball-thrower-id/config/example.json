@@ -1,0 +1,25 @@
+{
+  "name": "EXAMPLE - copy this file and edit it for your own match",
+
+  "video":  "../my_match.mp4",
+  "events": "../my_match_Throws_data_predicted.csv",
+
+  "gallery_dir": "gallery_mymatch",
+  "court_file":  "court_mymatch.json",
+  "labels":      "labels_mymatch.csv",
+  "predictions": "predictions_mymatch.json",
+
+  "pose_model": "yolov8m-pose.pt",
+  "ball_model": "yolov8m.pt",
+
+  "half2_start": "22:00",
+
+  "roster": {
+    "1": {"name": "Player A", "team": "TEAM1"},
+    "2": {"name": "Player B", "team": "TEAM1"},
+    "3": {"name": "Player C", "team": "TEAM1"},
+    "4": {"name": "Player D", "team": "TEAM2"},
+    "5": {"name": "Player E", "team": "TEAM2"},
+    "6": {"name": "Player F", "team": "TEAM2"}
+  }
+}

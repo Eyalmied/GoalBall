@@ -34,6 +34,14 @@ GoalBall/
 │       └── Paralkympics2024/
 │           └── <GAME>/outputs/<GAME>_Throws_data.xlsx
 │
+├── goalball-thrower-id/              ← Who threw each ball (see below); takes the throw
+│   │                                    timestamps from this pipeline's CSV
+│   ├── README.md
+│   ├── scripts/run_pipeline.py       ← One command, start to finish
+│   ├── goalball/                     ← The library behind it
+│   ├── docs/                         ← Usage, design, results, halves, output format
+│   └── config/                       ← One JSON per match (paths + roster)
+│
 └── Train Model/
     ├── CNN YOLOv8 Finetune/          ← YOLO annotation pipeline + two independent training options
     │   ├── 1_mov_to_frames.py        ← Data prep step 1: extract frames from video for CVAT
@@ -286,6 +294,70 @@ python "Train Model/LSTM Training/LSTM+YAMNet/train_final.py"
 
 **Both models share the same BiLSTM architecture** (128 hidden, 2 layers, self-attention, focal loss) — only the input dimension differs.  
 **Automatic routing in `predict_pipeline_with_YAMNet.py`:** if the game's peak YAMNet crowd score > 0.1 → 32f model is used; otherwise → 23f baseline. No manual selection needed.
+
+---
+
+## Thrower Identification — who threw each ball
+
+`goalball-thrower-id/` answers a different question from the rest of this repo:
+not *what happened to the throw*, but *which player made it*.
+
+It takes only the **throw timestamps** from this pipeline's
+`..._Throws_data_predicted.csv` and works out the rest from the video.
+
+Goalball defeats the usual approaches — both teams wear identical uniforms,
+every player wears blackout eyeshades, and at broadcast distance a jersey
+number is about twenty pixels tall and usually behind the net. So instead it
+identifies a player by **where the throw came from**, matched against home
+zones recorded once by hand, and the team falls out of the name because the two
+teams stand at opposite ends of the court. Posture (defenders throw themselves
+flat to block, attackers stay on their feet) picks the thrower out of the
+players on court.
+
+| Measured on 85 hand-labelled throws | |
+|---|---|
+| Correct team | **97.6%** |
+| Correct thrower | **74.1%** |
+| Strictly video-only (no CSV field but the timestamps) | ~50% |
+| Guessing | 17% |
+
+```bash
+cd goalball-thrower-id
+pip install -r requirements.txt
+pip install torch torchreid tensorboard      # the appearance model
+python scripts/selftest.py                   # checks the install and the geometry
+
+python scripts/run_pipeline.py --config config/paralympics24_isr_chn.json \
+       --half auto --half2-start 22:00
+```
+
+That runs every step, skipping any already done: tag the players once (a
+window, ~5 minutes), click the four court corners once, predict every throw
+(~1 s each on a laptop CPU), and measure the accuracy if any throws have been
+labelled.
+
+**Teams change ends at half-time**, which moves every player's home zone to the
+opposite end of the court — so the half is an explicit input (`--half 1`,
+`--half 2`, or `--half auto --half2-start MM:SS`). Player ids, names and teams
+never change; only the positions do.
+
+Output is one JSON record per throw with the player, the team, a confidence in
+three readable parts, and the reasoning behind the call. Confidence is
+informative — calls at 0.70 and above are right 77.6% of the time against
+61.1% below — so weak calls can be reviewed rather than trusted.
+
+| | |
+|---|---|
+| [goalball-thrower-id/README.md](goalball-thrower-id/README.md) | overview |
+| [docs/USAGE.md](goalball-thrower-id/docs/USAGE.md) | step by step, every key press and flag |
+| [docs/HALVES.md](goalball-thrower-id/docs/HALVES.md) | halves and changing ends |
+| [docs/DESIGN.md](goalball-thrower-id/docs/DESIGN.md) | how it works and why |
+| [docs/RESULTS.md](goalball-thrower-id/docs/RESULTS.md) | what was measured, and the ceiling |
+| [docs/OUTPUT.md](goalball-thrower-id/docs/OUTPUT.md) | every field in the output file |
+
+It shares no code with the pipelines above and needs no changes to them: the
+two generic COCO YOLO models it uses (people/skeletons and the ball) are
+downloaded on first run, separate from `Model Weights/`.
 
 ---
 
