@@ -39,7 +39,7 @@ The players do not change — just where they stand:
 
 | | |
 |---|---|
-| **changes** | each player's home zone: the point moves to the opposite end of the court |
+| **changes** | each player's home zone: the point moves to the opposite end of the court — *measured directly* if you tagged them in both halves, mirrored if not |
 | unchanged | the player ids — player 3 is still player 3 |
 | unchanged | the names, and which team each player is on |
 | unchanged | the reference images — a player looks the same in both halves |
@@ -58,11 +58,18 @@ each player is expected to be.
 python scripts/build_gallery.py --config config/mygame.json --half 1
 ```
 
-Tag inside **one** half and say which one. The half is written into
-`gallery/manifest.json` as `gallery_half`, so you never state it again.
+Tag from **either** half — press `h` during tagging to switch, as often as you
+like, for any player. Each position is stored with the half it came from, so
+the two never get averaged together.
 
-If your config has `half2_start`, the builder only offers you frames from the
-half you named — you cannot accidentally mix the two.
+A player tagged in both halves ends up with a **measured** home zone for each,
+and nothing is mirrored for them. A player tagged in only one gets their zone
+mirrored into the other, which is good but not as good. Tagging a player in
+both halves costs the same number of boxes as tagging them twice in one, so
+there is no reason not to.
+
+`--half` says which half to start in, and which one the gallery reports as its
+reference (`gallery_half` in `manifest.json`).
 
 ### When you predict
 
@@ -137,7 +144,7 @@ frame, so the flip is exact and reversible.
 
 | | affected by the half? |
 |---|---|
-| Home-zone **positions** | **yes** — mirrored end-for-end |
+| Home-zone **positions** | **yes** — measured per half where you tagged, mirrored end-for-end where you did not |
 | Player ids, names, teams | no — read straight from the roster, never altered |
 | Reference images | no — a player looks the same in both halves |
 | The court fence | no — same physical court both halves |

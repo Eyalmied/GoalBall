@@ -100,39 +100,62 @@ asking of you.
 python scripts/build_gallery.py --config config/mygame.json --half 1
 ```
 
-You will tag all six players in five different frames. Each tag records what
-that player looks like **and where they stand on court** — their home zone.
-The home zone is the part that matters: identical uniforms and blackout
-eyeshades defeat every appearance model, so position is what separates two
-teammates.
+You give every player five reference images. Each tag records what that player
+looks like **and where they stand on court** — their home zone. The home zone
+is the part that matters: identical uniforms and blackout eyeshades defeat
+every appearance model, so position is what separates two teammates.
 
-**Per player: drag a box around them, then press their number.** When all six
-are boxed, press `c`. Repeat for five rounds.
+**Drag a box around a player, then press their number.** That's one image for
+them. Tag whoever else is clear in the same frame, press `n` for another frame,
+and carry on until everyone has five.
 
 | key | does |
 |---|---|
 | drag mouse | draw a box around one player |
-| `1`–`6` | tag the box you just drew as that player |
-| `u` | undo the last tag in this frame |
-| `c` / Enter | save this round — only works once everyone is tagged |
-| `n` | skip this frame, get another one |
-| `q` | stop (rounds already saved are kept) |
+| `1`–`6` | file the box you just drew under that player |
+| `n` | another frame from this half |
+| `b` | go back a frame |
+| **`h`** | **switch half** — the other half's view of the same players |
+| `u` | undo the last tag |
+| `q` | stop (everything tagged so far is kept) |
 
-Three things worth getting right:
+Progress is counted **per player**, shown along the top: `1:3/5  2:5/5  3:0/5 …`.
+Nobody has to come from the same frames as anybody else.
+
+### Use both halves
+
+Press `h` to flip between a first-half frame and a second-half one, as often as
+you like, for any player. A player who is blocked or facing away for the whole
+first half is often perfectly clear in the second — tag them there instead of
+settling for a bad crop.
+
+This is safe because every position is stored **with the half it came from**,
+and medians are taken per half, never across them. A player tagged in both ends
+up with a *measured* home zone for each, which is better than measuring one and
+mirroring it into the other. The run tells you which you got:
+
+```
+    half 1   CHN at the bottom,  ISR at the top   (6/6 zones measured here)
+    half 2   CHN at the top,  ISR at the bottom   (4/6 zones measured here)
+```
+
+`h` only works if the pipeline knows where half 2 starts — give `--half2-start
+MM:SS`, or `half2_start` in your config. Without it you get one half and a
+warning.
+
+`--half` just says which half to start in and which one the gallery reports as
+its reference.
+
+Two more things that matter:
 
 - **Include the feet.** The bottom edge of your box is the position that gets
   recorded. A box cut off at the knees puts the player metres up the court.
-- **Skip messy frames.** If players overlap, press `n`. Only complete rounds
-  are saved, so everyone ends up with the same number of good references.
-- **`--half` matters.** Tag inside one half and say which one. With
-  `half2_start` in your config the builder only offers you frames from that
-  half, so you cannot mix them by accident. See [HALVES.md](HALVES.md).
+- **Skip bad frames.** If a player is a blur or behind someone else, press `n`
+  or `h` and find a better frame. Five good crops beat five rushed ones.
 
 When it finishes it reads the gallery back and prints which end each team is
-on. **Check that against the video.** If it is swapped, you tagged the other
-half — re-run with the other `--half`.
-
----
+on, per half. **Check that against the video.** If it is swapped, start in the
+other half (`--half 2`).
 
 ## Step 2 — Mark the court *(once per camera angle, opens a window)*
 
