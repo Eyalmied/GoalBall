@@ -83,6 +83,11 @@ It is the **single source of truth** for how the match is split. Every step —
 tagging, the court check, labelling, prediction — reads it from here, so they
 cannot disagree, and you never pass it on the command line.
 
+A match is assumed to have **two halves**, so this field is required. If you
+leave it out the run stops and tells you to add it, rather than quietly
+treating the whole video as one half. If your video genuinely *is* a single
+half, pass `--half 1` (or `--half 2`) instead and you can omit it.
+
 ---
 
 ## The short version

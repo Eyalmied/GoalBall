@@ -296,10 +296,15 @@ def build(gallery_half: int, mode: str, half2_start_text: Optional[str],
     start_frame = None
     if mode == "auto":
         if not half2_start_text:
-            logs.fail("--half auto needs --half2-start MM:SS",
-                      "give the video timestamp where the second half begins, "
-                      "e.g. --half2-start 24:00; if your video is a single half, "
-                      "use --half 1 or --half 2 instead")
+            logs.fail("a match is treated as two halves, but nothing says when "
+                      "the ends change",
+                      'add "half2_start": "22:00" to your config file - the '
+                      "video timestamp where the second half begins.\n"
+                      "      If this video is a SINGLE half, say so instead: "
+                      "--half 1 (or --half 2).\n"
+                      "      Guessing is not safe here: treating a full match "
+                      "as one half matches every second-half throw against the "
+                      "wrong end of the court.")
         from .events import mmss_to_seconds
         start_frame = int(round(mmss_to_seconds(half2_start_text) * fps))
 

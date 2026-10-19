@@ -67,10 +67,14 @@ Step by step, with every key press and every flag:
 python scripts/run_pipeline.py --config config/mygame.json
 ```
 
-`half2_start` in the config is the single source of truth for when the ends
-change — every step reads it from there, so none of them can disagree about
-where the match splits. Override it for one run with `--half 1`, `--half 2` or
-`--half2-start MM:SS` if you need to.
+A match is assumed to have **two halves**, so every run covers both and splits
+them at `half2_start` — the single source of truth for when the ends change.
+Every step reads it from there, so none of them can disagree.
+
+It is required for that reason: leave it out and the run stops rather than
+quietly treating the whole video as one half, which is what matches
+second-half throws against the wrong end of the court. If your video really is
+a single half, say so with `--half 1` or `--half 2`.
 
 Teams change ends at half-time, which moves every player's home zone to the
 opposite end of the court. Since identity *is* position here, telling it the

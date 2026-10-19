@@ -52,9 +52,11 @@ each player is expected to be.
 
 ## Set it once, in the config
 
-`half2_start` in your config file is the **single source of truth** for when
-the ends change. Every step reads it from there — tagging, the court check,
-labelling, prediction — so they cannot disagree about where the match splits.
+**A match has two halves, so that is the default.** Every run covers both and
+splits them at `half2_start` from your config — the **single source of truth**
+for when the ends change. Every step reads it from there (tagging, the court
+check, labelling, prediction), so they cannot disagree about where the match
+splits.
 
 ```json
 {
@@ -76,9 +78,22 @@ The run says what it worked out and where it got it:
     ends change at         22:00   (from the config file)
 ```
 
-`--half` defaults to `auto` exactly when a half-time is known — if the config
-says the match has two halves, treating the video as one would be wrong. With
-no `half2_start` anywhere it falls back to a single half and says so.
+Because two halves is the default, `half2_start` is **required**. Leave it out
+and the run stops rather than guessing:
+
+```
+✗ PROBLEM  a match is treated as two halves, but nothing says when the ends change
+     what to do: add "half2_start": "22:00" to your config file - the video
+     timestamp where the second half begins.
+     If this video is a SINGLE half, say so instead: --half 1 (or --half 2).
+```
+
+That is deliberate. The old behaviour — quietly treating the whole video as
+one half — is exactly how every second-half throw ends up matched against the
+wrong end of the court, with nothing on screen to tell you.
+
+**If your video really is a single half**, say so with `--half 1` or
+`--half 2`. Then no `half2_start` is needed.
 
 The flags below still exist for one-off experiments. `--half2-start` overrides
 the config for that run only, and the run warns you when the two disagree,

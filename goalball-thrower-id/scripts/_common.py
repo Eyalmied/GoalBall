@@ -63,16 +63,17 @@ def add_half_flags(parser: argparse.ArgumentParser, *,
     """
     group = parser.add_argument_group(
         "which half",
-        "Teams change ends at half-time, so the half decides where each "
-        "player's home zone is. Getting it wrong does not degrade the result "
-        "gently - it inverts it. Put half2_start in your config file once and "
-        "none of these flags are needed.")
+        "A match has two halves, and that is the default: every run covers "
+        "both, splitting them at half2_start from your config. Teams change "
+        "ends at half-time, so the half decides where each player's home zone "
+        "is - get it wrong and the result does not degrade gently, it "
+        "inverts.")
     choices = ["1", "2"] + (["auto"] if include_auto else [])
     group.add_argument(
         "--half", default=None, choices=choices,
-        help="1 or 2 = treat the whole run as that half"
-             + ("; auto = the video covers both. Default: auto when the config "
-                "gives half2_start, otherwise 1."
+        help="only when this video is a SINGLE half: 1 or 2 says which. "
+             + ("The default is auto - both halves, split at the config's "
+                "half2_start."
                 if include_auto else "  (default: 1)"))
     if include_auto:
         group.add_argument(
@@ -133,18 +134,20 @@ def resolve_halves(args, cfg, fps: float, gallery_half: int = 1,
     """
     Build the run's HalfPlan from one place, so every script agrees.
 
-    `--half` is left unset by default: when the config knows where the second
-    half starts, the video evidently covers both and `auto` is the only answer
-    that can be right. Naming a half explicitly still wins.
+    A match has two halves, so that is the default: every run covers both
+    unless you say otherwise with --half 1 or --half 2. Which means the
+    half-time timestamp is required, and a missing one is an error rather
+    than a quiet fallback to treating the whole video as one half - that
+    fallback is exactly how second-half throws end up matched against the
+    wrong end of the court.
     """
     from goalball import halves
 
     boundary, source = half_boundary(args, cfg)
     mode = getattr(args, "half", None)
     if mode is None:
-        mode = "auto" if boundary else "1"
-        why = ("the config gives a half-time, so both halves are in play"
-               if boundary else "no half-time known, so the run is one half")
+        mode = "auto"
+        why = "the default - a match has two halves"
     else:
         why = "you asked for it with --half"
 
@@ -152,8 +155,6 @@ def resolve_halves(args, cfg, fps: float, gallery_half: int = 1,
         logs.kv("half", f"{mode}   ({why})")
         if boundary:
             logs.kv("ends change at", f"{boundary}   (from {source})")
-        elif mode == "auto":
-            logs.kv("ends change at", logs.yellow("not set"))
 
     return halves.build(gallery_half, mode, boundary, fps,
                         mirror_about=getattr(args, "mirror_about", "zones"))

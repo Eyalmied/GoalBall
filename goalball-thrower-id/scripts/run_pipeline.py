@@ -118,11 +118,15 @@ def main() -> None:
     logs.title("run the whole pipeline", cfg.name)
     cfg.describe()
     boundary, boundary_source = half_boundary(args, cfg)
+    logs.kv("half", args.half or "auto - both halves, the default")
     if boundary:
         logs.kv("ends change at", f"{boundary}   (from {boundary_source})")
-        logs.kv("half", args.half or "auto, because the half-time is known")
-    else:
-        logs.kv("half", args.half or "1, no half-time set")
+    elif not args.half:
+        logs.warn("a match is treated as two halves, but nothing says when "
+                  "the ends change",
+                  'add "half2_start" to your config, or pass --half 1 / '
+                  "--half 2 if this video is a single half - the stages below "
+                  "will stop for the same reason")
     if args.dry_run:
         logs.blank()
         logs.info(logs.yellow("  dry run - nothing will be changed"))

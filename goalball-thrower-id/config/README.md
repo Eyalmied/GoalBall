@@ -20,7 +20,7 @@ python scripts/run_pipeline.py --config config/mygame.json
 | `labels` | ground-truth CSV, if you label throws to measure accuracy |
 | `predictions` | where the results go |
 | `pose_model` / `ball_model` | YOLO weight files. A bare name like `yolov8m-pose.pt` lets ultralytics download it on first use, which is what both example configs do. These are the **generic COCO** models — for people, skeletons and the ball — not a fine-tuned goalball detector |
-| `half2_start` | video timestamp where the second half begins, e.g. `"22:00"`. **The single source of truth for how the match is split** — tagging, the court check, labelling and prediction all read it from here. Set it and you never pass a half flag on the command line |
+| `half2_start` | **Required.** Video timestamp where the second half begins, e.g. `"22:00"`. A match is assumed to have two halves, and this is the single source of truth for where it splits — tagging, the court check, labelling and prediction all read it from here. Omit it only if the video is a single half, and then pass `--half 1` or `--half 2` |
 | `roster` | the six players: id, name, team. The team labels are what predictions report. |
 
 Relative paths are resolved **against the config file itself**, so a config can
