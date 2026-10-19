@@ -72,6 +72,7 @@ DEFAULTS: dict = {
     "half2_start": None,
     "roster": {},
     "source": None,
+    "file_values": {},
 }
 
 
@@ -91,6 +92,9 @@ class GameConfig:
     half2_start: Optional[str] = None
     roster: dict = field(default_factory=dict)
     source: Optional[str] = None       # which config file this came from
+    # What the config FILE said, before command-line overrides were applied.
+    # Lets a caller tell "you typed this" from "your config says this".
+    file_values: dict = field(default_factory=dict)
 
     # -- roster ---------------------------------------------------------
     def player_config(self) -> dict:
@@ -150,6 +154,7 @@ def load(path: Optional[str], overrides: Optional[dict] = None,
             data[key] = (_resolve(base, value, key) if key in PATH_KEYS
                          else value)
         data["source"] = str(f)
+        data["file_values"] = {k: data[k] for k in raw if k in data}
 
     for key, value in (overrides or {}).items():
         if key in data and value is not None:

@@ -50,6 +50,42 @@ each player is expected to be.
 
 ---
 
+## Set it once, in the config
+
+`half2_start` in your config file is the **single source of truth** for when
+the ends change. Every step reads it from there — tagging, the court check,
+labelling, prediction — so they cannot disagree about where the match splits.
+
+```json
+{
+  "...": "...",
+  "half2_start": "22:00"
+}
+```
+
+With that set, nothing else is needed:
+
+```bash
+python scripts/run_pipeline.py --config config/mygame.json
+```
+
+The run says what it worked out and where it got it:
+
+```
+    half                   auto   (the config gives a half-time, so both halves are in play)
+    ends change at         22:00   (from the config file)
+```
+
+`--half` defaults to `auto` exactly when a half-time is known — if the config
+says the match has two halves, treating the video as one would be wrong. With
+no `half2_start` anywhere it falls back to a single half and says so.
+
+The flags below still exist for one-off experiments. `--half2-start` overrides
+the config for that run only, and the run warns you when the two disagree,
+because a disagreement means the steps are splitting the match differently.
+
+---
+
 ## What you type
 
 ### When you tag the gallery
@@ -74,21 +110,19 @@ reference (`gallery_half` in `manifest.json`).
 ### When you predict
 
 ```bash
-# the footage is the same half the gallery was tagged in
-python scripts/predict_throwers.py --config config/mygame.json --half 1
+# normal: the config's half2_start decides everything
+python scripts/predict_throwers.py --config config/mygame.json
 
-# the footage is the other half — home zones get mirrored
+# this footage is only one half, whatever the config says
+python scripts/predict_throwers.py --config config/mygame.json --half 1
 python scripts/predict_throwers.py --config config/mygame.json --half 2
 
-# one file covering the whole match, ends changing at 22:00
-python scripts/predict_throwers.py --config config/mygame.json \
-       --half auto --half2-start 22:00
+# try a different half-time without editing the config (warns that it differs)
+python scripts/predict_throwers.py --config config/mygame.json --half2-start 25:00
 ```
 
-`--half auto` decides per throw from its timestamp, so a full-match video needs
-one run, not two.
-
-Put `"half2_start": "22:00"` in your config file and you can drop the flag.
+`auto` decides per throw from its timestamp, so a full-match video needs one
+run, not two.
 
 ---
 

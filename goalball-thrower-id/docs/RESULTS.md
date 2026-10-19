@@ -220,8 +220,7 @@ half correctly, which is how 4a was found.
 ## 7. Reproducing any of this
 
 ```bash
-python scripts/predict_throwers.py --config config/mygame.json --half auto \
-       --half2-start 22:00
+python scripts/predict_throwers.py --config config/mygame.json
 python scripts/evaluate.py --config config/mygame.json --holdout 0.3
 ```
 

@@ -33,7 +33,7 @@ import pathlib
 import cv2
 import numpy as np
 
-from _common import base_parser, parse_timestamp, resolve
+from _common import base_parser, half_boundary, parse_timestamp, resolve
 from goalball import court as court_module
 from goalball import gallery as gallery_module
 from goalball import halves, logs, video
@@ -129,9 +129,9 @@ def main() -> None:
                              "reports as its reference (default: 1). You can "
                              "switch halves freely while tagging with h.")
     parser.add_argument("--half2-start", dest="half2_start", default=None,
-                        help="video timestamp where the second half begins, "
-                             "e.g. 24:00. Without it the second half cannot be "
-                             "offered and h does nothing.")
+                        help="override the config's half2_start for this run "
+                             "only. Without a half-time from either source the "
+                             "second half cannot be offered and h does nothing.")
     parser.add_argument("--rounds", type=int, default=5,
                         help="reference images per player (default: 5). More is "
                              "better, but 5 is plenty for the position signal.")
@@ -163,7 +163,10 @@ def main() -> None:
     logs.step_done()
 
     logs.step(3, 4, "Working out which frames to offer")
-    ranges, _boundary = half_ranges(info, args.half2_start or cfg.half2_start)
+    boundary_text, boundary_source = half_boundary(args, cfg)
+    if boundary_text:
+        logs.kv("ends change at", f"{boundary_text}   (from {boundary_source})")
+    ranges, _boundary = half_ranges(info, boundary_text)
     clip_low = parse_timestamp(args.from_time, info.fps, 0) if args.from_time else None
     clip_high = parse_timestamp(args.to_time, info.fps, info.frame_count) \
         if args.to_time else None
@@ -187,8 +190,8 @@ def main() -> None:
     if len(pools) < 2:
         logs.warn("only one half can be offered, so you cannot press h to "
                   "switch during tagging",
-                  "pass --half2-start MM:SS (or add half2_start to your "
-                  "config) to make both halves available")
+                  "add half2_start to your config so every step splits the "
+                  "match the same way")
     start_half = int(args.half) if int(args.half) in pools else sorted(pools)[0]
     logs.kv("starting in", f"half {start_half}")
     logs.step_done()
@@ -209,8 +212,8 @@ def main() -> None:
     reloaded_crops, player_config, meta = gallery_module.load(cfg.gallery_dir)
     court = court_module.load(cfg.court_file)
     if meta["has_home_zones"]:
-        plan = halves.build(meta["gallery_half"], "auto",
-                            args.half2_start or cfg.half2_start, info.fps)
+        plan = halves.build(meta["gallery_half"], "auto", boundary_text,
+                            info.fps)
         for half in sorted(pools):
             ends = plan.team_ends(player_config, court, half)
             provenance = plan.zone_provenance(player_config, half)

@@ -79,13 +79,16 @@ Paths are relative to this repository folder. Full key list:
 scrubbing to the restart after the interval; a few seconds either way is fine,
 as long as it falls inside the break.
 
+It is the **single source of truth** for how the match is split. Every step —
+tagging, the court check, labelling, prediction — reads it from here, so they
+cannot disagree, and you never pass it on the command line.
+
 ---
 
 ## The short version
 
 ```bash
-python scripts/run_pipeline.py --config config/mygame.json \
-       --half auto --half2-start 22:00
+python scripts/run_pipeline.py --config config/mygame.json
 ```
 
 That runs every step below, skipping any that is already done. The rest of this
@@ -139,9 +142,8 @@ mirroring it into the other. The run tells you which you got:
     half 2   CHN at the top,  ISR at the bottom   (4/6 zones measured here)
 ```
 
-`h` only works if the pipeline knows where half 2 starts — give `--half2-start
-MM:SS`, or `half2_start` in your config. Without it you get one half and a
-warning.
+`h` only works if the pipeline knows where half 2 starts — that comes from
+`half2_start` in your config. Without it you get one half and a warning.
 
 `--half` just says which half to start in and which one the gallery reports as
 its reference.
@@ -187,8 +189,7 @@ referees back in and stretches the half-time flip.
 ## Step 3 — Predict *(the actual work)*
 
 ```bash
-python scripts/predict_throwers.py --config config/mygame.json \
-       --half auto --half2-start 22:00
+python scripts/predict_throwers.py --config config/mygame.json
 ```
 
 One line per throw:
@@ -252,7 +253,7 @@ Everything else has a measured-best default. `python scripts/predict_throwers.py
 To get a number you can trust, label some throws first:
 
 ```bash
-python scripts/label_throwers.py --config config/mygame.json --half auto
+python scripts/label_throwers.py --config config/mygame.json
 ```
 
 Each throw loops with the ball's release point marked and the gallery beside

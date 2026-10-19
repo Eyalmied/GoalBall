@@ -38,7 +38,7 @@ import pathlib
 import subprocess
 import sys
 
-from _common import add_half_flags, base_parser, resolve
+from _common import add_half_flags, base_parser, half_boundary, resolve
 from goalball import gallery as gallery_module
 from goalball import logs
 
@@ -117,8 +117,12 @@ def main() -> None:
 
     logs.title("run the whole pipeline", cfg.name)
     cfg.describe()
-    logs.kv("half", args.half + (f", ends change at {args.half2_start or cfg.half2_start}"
-                                 if args.half == "auto" else ""))
+    boundary, boundary_source = half_boundary(args, cfg)
+    if boundary:
+        logs.kv("ends change at", f"{boundary}   (from {boundary_source})")
+        logs.kv("half", args.half or "auto, because the half-time is known")
+    else:
+        logs.kv("half", args.half or "1, no half-time set")
     if args.dry_run:
         logs.blank()
         logs.info(logs.yellow("  dry run - nothing will be changed"))
@@ -172,26 +176,27 @@ def main() -> None:
                       "run it once on a machine with a display, then copy "
                       f"{cfg.gallery_dir}/ and {cfg.court_file} across")
 
+        # Each stage reads half2_start from the same config, so it is passed
+        # on only when the user typed an override on this command line.
+        override = ["--half2-start", args.half2_start] if args.half2_start else []
+
         if name == "gallery":
             command = ["python", str(HERE / "build_gallery.py")] + inherited + [
                 "--rounds", str(args.rounds),
-                "--half", "1" if args.half == "auto" else args.half,
-            ]
-            if args.half2_start or cfg.half2_start:
-                command += ["--half2-start", args.half2_start or cfg.half2_start]
+            ] + override
+            if args.half and args.half != "auto":
+                command += ["--half", args.half]
         elif name == "court":
-            command = ["python", str(HERE / "set_court.py")] + inherited + [
-                "--half", args.half]
-            if args.half2_start:
-                command += ["--half2-start", args.half2_start]
+            command = ["python", str(HERE / "set_court.py")] + inherited + override
+            if args.half:
+                command += ["--half", args.half]
         elif name == "predict":
             command = ["python", str(HERE / "predict_throwers.py")] + inherited + [
-                "--half", args.half,
                 "--appearance", args.appearance,
                 "--release-source", args.release_source,
-            ]
-            if args.half2_start:
-                command += ["--half2-start", args.half2_start]
+            ] + override
+            if args.half:
+                command += ["--half", args.half]
             if args.gallery_half:
                 command += ["--gallery-half", str(args.gallery_half)]
             command += ["--mirror-about", args.mirror_about]

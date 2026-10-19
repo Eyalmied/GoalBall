@@ -59,11 +59,18 @@ Step by step, with every key press and every flag:
 
 ## Say which half
 
-```bash
-python scripts/run_pipeline.py --config config/mygame.json --half 1
-python scripts/run_pipeline.py --config config/mygame.json --half 2
-python scripts/run_pipeline.py --config config/mygame.json --half auto --half2-start 22:00
+```json
+{ "half2_start": "22:00" }
 ```
+
+```bash
+python scripts/run_pipeline.py --config config/mygame.json
+```
+
+`half2_start` in the config is the single source of truth for when the ends
+change — every step reads it from there, so none of them can disagree about
+where the match splits. Override it for one run with `--half 1`, `--half 2` or
+`--half2-start MM:SS` if you need to.
 
 Teams change ends at half-time, which moves every player's home zone to the
 opposite end of the court. Since identity *is* position here, telling it the
@@ -72,8 +79,8 @@ wrong half does not make the answer slightly worse — it inverts it.
 When tagging, `h` switches between the halves, so you can take each player's
 reference images from wherever they are clearest. Every position is stored with
 the half it came from: tag a player in both and they get a *measured* zone for
-each, tag them in one and the other is mirrored. `--half auto` then handles a
-video covering the whole match in one pass.
+each, tag them in one and the other is mirrored. A video covering the whole
+match is then handled in one pass.
 
 Every run prints what it worked out, and it is worth reading those two lines:
 

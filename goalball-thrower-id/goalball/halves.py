@@ -245,10 +245,12 @@ class HalfPlan:
 
     # -- reporting -------------------------------------------------------
     def describe(self, player_config: dict, court: Court) -> None:
-        if self.mode == "auto":
-            logs.kv("half", f"both (switching at {self.half2_start_text})")
-        else:
-            logs.kv("half", f"{self.mode} of the match")
+        """
+        What this half setting means for the teams.
+
+        The setting itself, and where it came from, is announced by whoever
+        resolved it - this adds only the consequences.
+        """
         logs.kv("gallery tagged in", f"half {self.gallery_half}")
         if any(self.mirrors_for_half(h) for h in self.halves_in_play):
             centre = self.mirror_centre(player_config, court)

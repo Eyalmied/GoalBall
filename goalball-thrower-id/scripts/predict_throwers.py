@@ -27,7 +27,7 @@ import os
 import pathlib
 import time
 
-from _common import add_half_flags, base_parser, resolve
+from _common import add_half_flags, base_parser, resolve, resolve_halves
 from goalball import court as court_module
 from goalball import gallery as gallery_module
 from goalball import detect, halves, logs, predict, video
@@ -148,9 +148,7 @@ def main() -> None:
     # ---- 4. the half --------------------------------------------------
     logs.step(4, TOTAL_STEPS, "Working out which half is being analysed")
     gallery_half = args.gallery_half or meta["gallery_half"]
-    plan = halves.build(gallery_half, args.half,
-                        args.half2_start or cfg.half2_start, info.fps,
-                        mirror_about=args.mirror_about)
+    plan = resolve_halves(args, cfg, info.fps, gallery_half)
     plan.describe(player_config, court)
     per_half = halves.counts_by_half(plan, throws)
     logs.kv("throws in each half", "   ".join(f"half {h}: {n}"
@@ -166,11 +164,12 @@ def main() -> None:
                   "rebuild the gallery: python scripts/build_gallery.py "
                   "--config ... --half 1")
     elif plan.mode != "auto" and len(per_half) == 1 and \
-            info.duration_s > 40 * 60 and not (args.half2_start or cfg.half2_start):
+            info.duration_s > 40 * 60 and not plan.half2_start_text:
         logs.warn(f"the video is {logs.human_duration(info.duration_s)} long, "
                   f"which usually means it holds both halves, but every throw "
                   f"is being treated as half {plan.mode}",
-                  "if it really covers both, use --half auto --half2-start MM:SS")
+                  "if it really covers both, add half2_start to your config - "
+                  "every step then splits the match the same way")
     logs.step_done()
 
     # ---- 5. models ----------------------------------------------------
