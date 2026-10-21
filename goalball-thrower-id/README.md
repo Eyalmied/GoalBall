@@ -47,7 +47,7 @@ python scripts/run_pipeline.py --config config/mygame.json --half 1
 `run_pipeline.py` is the one command to remember. It works out what is already
 done, does what is missing, and stops with a plain explanation if it needs you:
 
-1. **tag the players** once — opens a window, about five minutes
+1. **tag the players** once — opens a window, about five minutes (`h` switches half)
 2. **mark the court** once — click four corners
 3. **predict** every throw — about a second each
 4. **measure it**, if you have labelled some throws
@@ -69,9 +69,11 @@ Teams change ends at half-time, which moves every player's home zone to the
 opposite end of the court. Since identity *is* position here, telling it the
 wrong half does not make the answer slightly worse — it inverts it.
 
-Tag the gallery inside one half and name it (`build_gallery.py --half 1`); it
-is stored with the gallery, and every later run mirrors the zones as needed.
-`--half auto` handles a video that covers the whole match in one pass.
+When tagging, `h` switches between the halves, so you can take each player's
+reference images from wherever they are clearest. Every position is stored with
+the half it came from: tag a player in both and they get a *measured* zone for
+each, tag them in one and the other is mirrored. `--half auto` then handles a
+video covering the whole match in one pass.
 
 Every run prints what it worked out, and it is worth reading those two lines:
 

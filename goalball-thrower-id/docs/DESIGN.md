@@ -55,10 +55,10 @@ the pipeline actually runs them.
 ```
 ONCE PER MATCH  (interactive, ~6 minutes)
   ┌──────────────────────────────────────────────────────────────┐
-  │  Tag all 6 players in K complete rounds, inside ONE half     │
+  │  Tag all 6 players, K images each, from EITHER half (h flips) │
   │    -> reference images per player                            │
-  │    -> HOME ZONE per player (median foot point)               │
-  │    -> the half it was tagged in, stored with the gallery      │
+  │    -> HOME ZONE per player PER HALF (median foot point)      │
+  │    -> the half each sample came from, stored with it          │
   │  Click the 4 court corners                                    │
   │    -> the fence, and the flat court used to flip ends         │
   └──────────────────────────────────────────────────────────────┘
@@ -86,10 +86,13 @@ PER THROW  (driven by the timestamp alone)
 
 ### 4.1 Reference gallery and home zones — `goalball/gallery.py`
 
-Tagging happens in **complete rounds**: a frame is saved only when every player
-has been boxed in it and confirmed. Partial frames are discarded whole, so
-every player ends with the same number of references and the same number of
-position samples — nobody is over- or under-represented.
+Tagging is counted **per player**, not per frame: box whoever is clear in front
+of you, move on, and carry on until everyone has the same number of images.
+They do not have to come from the same frames, which matters because a player
+can be occluded or facing away for a long stretch.
+
+One key (`h`) flips between a first-half frame and a second-half one, for any
+player, as often as wanted.
 
 Each box gives two things. The pixels feed the appearance model. The
 bottom-centre of the box — the player's feet, as a fraction of the frame — is
@@ -99,11 +102,25 @@ cannot drag it away.
 ```json
 {
   "player_config": {"1": {"name": "...", "team": "ISR"}, "...": {}},
-  "crops":       {"1": ["player_1_0.jpg", "..."]},
-  "home_zones":  {"1": [0.34, 0.39]},
+  "crops":        {"1": ["player_1_0.jpg", "..."]},
+  "home_zones_by_half": {
+      "1": {"1": [0.34, 0.39], "...": []},
+      "2": {"4": [0.66, 0.41], "...": []}
+  },
+  "home_zones":   {"1": [0.34, 0.39]},
   "gallery_half": 1
 }
 ```
+
+Every position sample carries the half it was measured in, and medians are
+taken **per half, never across them**. That is not a nicety: the same player
+stands at opposite ends in the two halves, so averaging a mixed set silently
+moves their zone to the wrong end once the other half's samples are the
+majority, with nothing to flag it.
+
+A player tagged in both halves therefore has a *measured* zone for each, and
+nothing is mirrored for them. `home_zones` repeats the `gallery_half` zones so
+older readers still work.
 
 Recording the home zone *at tagging time* is the move that makes
 position-based identity possible at all. Naming a position slot otherwise
