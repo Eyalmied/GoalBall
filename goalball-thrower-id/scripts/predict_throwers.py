@@ -72,15 +72,52 @@ def main() -> None:
                         help="frames are scaled to this width before detection "
                              "(default: 1280)")
     tuning.add_argument("--position-weight", dest="weight_position",
-                        type=float, default=1.0,
-                        help="1.0 = name the player by court position alone; "
-                             "lower mixes in appearance, which was measured to "
-                             "make things worse (default: 1.0)")
+                        type=float, default=0.75,
+                        help="how much court position counts against "
+                             "appearance when naming the player. 0.75 is the "
+                             "measured best; below about 0.65 appearance "
+                             "starts doing more harm than good (default: 0.75)")
     tuning.add_argument("--position-spread", dest="position_spread",
                         type=float, default=0.12,
                         help="how far a player may stray from their home zone "
                              "and still be recognised, as a fraction of the "
                              "frame (default: 0.12)")
+    tuning.add_argument("--thrower-model", dest="thrower_model", default=None,
+                        help="a goalball-trained detector whose class 0 is "
+                             "'throwing_player'. This is the default way the "
+                             "thrower is picked (69%% correct against 46%% for "
+                             "the motion rule, which covers the throws it "
+                             "misses). Defaults to the project's "
+                             "Model Weights/best.pt; pass 'none' to turn it "
+                             "off")
+    tuning.add_argument("--motion-weight", dest="weight_motion", type=float,
+                        default=0.4,
+                        help="how much 'this player is moving' counts when "
+                             "picking the thrower. The thrower runs up and "
+                             "swings; defenders are already down and "
+                             "team-mates stand still (default: 0.4)")
+    tuning.add_argument("--upright-weight", dest="weight_upright", type=float,
+                        default=0.6,
+                        help="how much 'this player is on their feet' counts "
+                             "(default: 0.6). Anything from 0.4 to 0.7 scored "
+                             "the same on the reference match")
+    tuning.add_argument("--ball-weight", dest="weight_ball", type=float,
+                        default=0.0,
+                        help="how much nearness to the detected ball counts "
+                             "(default: 0, off). The ball is detected most "
+                             "confidently at the BLOCKER's end, so this used "
+                             "to point at the wrong team")
+    tuning.add_argument("--pose-weight", dest="weight_pose", type=float,
+                        default=0.0,
+                        help="how much arm extension and stance width count "
+                             "(default: 0, off - measured to make things worse)")
+    tuning.add_argument("--localise-among", dest="localise_among",
+                        default="everyone", choices=["everyone", "attackers"],
+                        help="who can be the thrower: everyone on court "
+                             "(default), or only the posture-derived attacking "
+                             "team. Restricting it was measured to lose "
+                             "accuracy, because a wrong team removes the right "
+                             "answer")
     tuning.add_argument("--team-source", dest="team_source",
                         default="position", choices=["position", "posture"],
                         help="where the team in the answer comes from. "
@@ -101,8 +138,8 @@ def main() -> None:
                              "(default: relative)")
     tuning.add_argument("--no-ball", dest="use_ball", action="store_false",
                         default=True,
-                        help="do not look for the ball; pick the thrower from "
-                             "posture and pose only")
+                        help="never look for the ball, even if --ball-weight "
+                             "is set")
     tuning.add_argument("--no-flip-augment", dest="flip_augment",
                         action="store_false", default=True,
                         help="skip mirrored copies when embedding crops (faster, "
@@ -178,7 +215,16 @@ def main() -> None:
         frames_per_throw=args.frames_per_throw,
         window_fraction=args.window_fraction,
         processing_width=args.processing_width,
-        use_ball=args.use_ball,
+        use_ball=args.use_ball and args.weight_ball > 0,
+        weight_motion=args.weight_motion,
+        weight_upright=args.weight_upright,
+        weight_ball=args.weight_ball,
+        weight_pose=args.weight_pose,
+        localise_among=args.localise_among,
+        # "none" turns it off; an unset flag falls through to the config.
+        thrower_model=(None
+                       if (args.thrower_model or "").lower() == "none"
+                       else (args.thrower_model or cfg.thrower_model)),
         team_grouping=args.team_grouping,
         team_source=args.team_source,
         release_source=args.release_source,
@@ -195,10 +241,18 @@ def main() -> None:
                   "has a ball release point",
                   "the run will fall back to video-localised positions, which "
                   "is what --release-source thrower does")
+    if settings.thrower_model and not detect.has_model(settings.thrower_model):
+        logs.warn(f"no goalball detector at {settings.thrower_model}",
+                  "the thrower will be picked by movement and posture "
+                  "instead, which is measured at 46% against 69% - point "
+                  "--thrower-model at the project's Model Weights/best.pt to "
+                  "get the better one")
+        settings.thrower_model = None
     detect.warm_up(settings.pose_model,
                    settings.ball_model if settings.use_ball else None)
     predictor = predict.Predictor(cap, info, court, plan, player_config,
-                                  crops, settings)
+                                  crops, settings,
+                                  crops_by_half=meta.get("crops_by_half"))
     logs.blank()
     settings.describe()
     logs.step_done()

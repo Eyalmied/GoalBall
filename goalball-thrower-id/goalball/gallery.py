@@ -20,11 +20,17 @@ TAG EACH PLAYER WHEREVER THEY LOOK CLEAREST
     the same number of images for each player, so nobody is over- or
     under-represented, but they do not have to come from the same frames.
 
-AND IN EITHER HALF
-    One key flips between a frame from the first half and one from the second,
-    as often as you like, for any player. That matters because a player who is
-    half-occluded or facing away for the whole first half may be perfectly
-    visible in the second.
+ONE SET OF IMAGES PER HALF
+    A player is tagged separately in each half, and the two sets are kept
+    apart. This is not tidiness: the teams change ends, so a player who was
+    near the camera in the first half is at the far end in the second. The
+    crops differ in size, lighting and which way the player faces, and
+    comparing a second-half crop against first-half references compares two
+    different-looking things. Each half gets its own references, and a throw
+    is matched against the half it happened in.
+
+    One key flips between halves while tagging, as often as you like, for any
+    player.
 
 EVERY POSITION SAMPLE REMEMBERS ITS HALF
     This is what makes tagging across halves safe. Teams change ends, so the
@@ -70,39 +76,44 @@ def colour_for(player_id: int) -> tuple:
 # Save / load
 # ----------------------------------------------------------------------
 
-def save(gallery_dir: str, crops: dict, player_config: dict,
+def save(gallery_dir: str, crops_by_half: dict, player_config: dict,
          samples: Optional[dict], gallery_half: int,
          frame_size: Optional[tuple] = None) -> None:
     """
     Write the crops and the manifest. Overwrites any previous gallery.
 
-    `samples` is {player_id: [(x, y, half), ...]} - every position sample with
-    the half it was measured in. Medians are taken per half, so a player tagged
-    in both halves gets a measured zone for each.
+    `crops_by_half` is {half: {player_id: [image, ...]}} - a separate set of
+    reference images per half. `samples` is {player_id: [(x, y, half), ...]},
+    every position sample with the half it was measured in.
     """
     out = pathlib.Path(gallery_dir)
     out.mkdir(parents=True, exist_ok=True)
+    for stale in out.glob("player_*.jpg"):
+        stale.unlink()
 
     manifest = {
         "player_config": {str(k): {"name": v.get("name") or f"player {k}",
                                    "team": v.get("team") or "?"}
                           for k, v in player_config.items()},
-        "crops": {},
+        "crops_by_half": {}, "crops": {},
         "gallery_half": int(gallery_half),
-        "note": "home_zones_by_half[half][player] is (x, y) as a fraction of "
-                "the frame, measured at the player's feet in that half. "
-                "home_zones repeats the gallery_half zones for older readers.",
+        "note": "crops_by_half[half][player] are that player's reference "
+                "images in that half; home_zones_by_half[half][player] is "
+                "(x, y) as a fraction of the frame, at their feet.",
     }
     if frame_size:
         manifest["frame_size"] = [int(frame_size[0]), int(frame_size[1])]
 
-    for pid in sorted(crops):
-        files = []
-        for i, crop in enumerate(crops[pid]):
-            name = f"player_{pid}_{i}.jpg"
-            cv2.imwrite(str(out / name), crop)
-            files.append(name)
-        manifest["crops"][str(pid)] = files
+    for half in sorted(crops_by_half):
+        for pid in sorted(crops_by_half[half]):
+            files = []
+            for i, crop in enumerate(crops_by_half[half][pid]):
+                name = f"player_{pid}_h{half}_{i}.jpg"
+                cv2.imwrite(str(out / name), crop)
+                files.append(name)
+            if files:
+                manifest["crops_by_half"].setdefault(str(half), {})[str(pid)] = files
+                manifest["crops"].setdefault(str(pid), []).extend(files)
 
     by_half: dict = {}
     if samples:
@@ -117,25 +128,19 @@ def save(gallery_dir: str, crops: dict, player_config: dict,
                 # median, not mean: one mis-drawn box cannot drag the zone away
                 by_half.setdefault(str(half), {})[str(pid)] = [
                     float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))]
-
     if by_half:
         manifest["home_zones_by_half"] = by_half
-        # kept so anything reading the older schema still works
         manifest["home_zones"] = dict(by_half.get(str(int(gallery_half)), {}))
 
     (out / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
 
-    total = sum(len(v) for v in crops.values())
     logs.ok(f"gallery saved to {out}/")
-    logs.kv("reference images", f"{total} across {len(crops)} players")
-    if by_half:
-        for half in sorted(by_half, key=int):
-            covered = len(by_half[half])
-            logs.kv(f"home zones, half {half}",
-                    f"measured for {covered} of {len(crops)} players")
-        logs.kv("zones expressed in", f"half {gallery_half} for older readers")
-    else:
-        logs.kv("home zones", logs.yellow("NOT recorded"))
+    for half in sorted(manifest["crops_by_half"], key=int):
+        per = manifest["crops_by_half"][half]
+        counts = "  ".join(f"{pid}:{len(f)}" for pid, f in sorted(per.items(), key=lambda kv: int(kv[0])))
+        logs.kv(f"half {half} images", f"{sum(len(f) for f in per.values())} total   {counts}")
+    for half in sorted(by_half, key=int):
+        logs.kv(f"half {half} home zones", f"measured for {len(by_half[half])} players")
 
 
 def load(gallery_dir: str) -> tuple:
@@ -188,16 +193,32 @@ def load(gallery_dir: str) -> tuple:
                 measured[sorted(measured)[0]]
     zones = flat or by_half_raw
 
-    crops, unreadable = {}, 0
-    for pid_text, files in manifest.get("crops", {}).items():
-        images = []
-        for name in files:
+    def read_all(names):
+        out, bad = [], 0
+        for name in names:
             image = cv2.imread(str(folder / name))
             if image is None:
-                unreadable += 1
+                bad += 1
             else:
-                images.append(image)
+                out.append(image)
+        return out, bad
+
+    crops, unreadable = {}, 0
+    for pid_text, files in manifest.get("crops", {}).items():
+        images, bad = read_all(files)
+        unreadable += bad
         crops[int(pid_text)] = images
+
+    # The same images, kept split by half - what the matcher actually uses.
+    crops_by_half: dict = {}
+    for half_text, per_player in (manifest.get("crops_by_half") or {}).items():
+        for pid_text, files in per_player.items():
+            images, _ = read_all(files)
+            if images:
+                crops_by_half.setdefault(int(half_text), {})[int(pid_text)] = images
+    if not crops_by_half and crops:
+        # an older gallery: all its images belong to the half it was tagged in
+        crops_by_half[int(manifest.get("gallery_half", 1))] = crops
 
     total = sum(len(v) for v in crops.values())
     counts = {pid: len(v) for pid, v in sorted(crops.items())}
@@ -224,9 +245,23 @@ def load(gallery_dir: str) -> tuple:
                   "rebuild it with scripts/build_gallery.py --half <1 or 2>, or "
                   "pass --gallery-half explicitly on later runs")
 
+    for half in sorted(crops_by_half):
+        per = crops_by_half[half]
+        logs.kv(f"half {half} images",
+                "  ".join(f"{pid}:{len(v)}" for pid, v in sorted(per.items())))
+    thin = [(h, pid) for h, per in crops_by_half.items()
+            for pid, v in per.items() if len(v) < 3]
+    if thin:
+        logs.warn(f"{len(thin)} player/half combination(s) have fewer than 3 "
+                  f"reference images",
+                  "re-run scripts/build_gallery.py and tag those players more "
+                  "in that half - thin references make appearance matching noisy")
+
     meta = {
         "gallery_half": gallery_half,
         "has_home_zones": has_zones,
+        "crops_by_half": crops_by_half,
+        "halves_covered": sorted(crops_by_half),
         "counts": counts,
         "frame_size": manifest.get("frame_size"),
         "half_declared": "gallery_half" in manifest,
@@ -288,15 +323,15 @@ def contact_sheet(crops: dict, player_config: dict) -> Optional[np.ndarray]:
 def tag_interactive(cap, video_info, player_config: dict, per_player: int,
                     pools: dict, start_half: int = 1) -> tuple:
     """
-    Tag every player `per_player` times, from either half, in any order.
+    Tag every player `per_player` times IN EACH HALF, in any order.
 
     `pools` is {half: [frame_index, ...]} - the frames on offer for each half.
-    A half with no frames simply cannot be switched to.
+    A half with no frames simply cannot be switched to, and is not required.
 
-    Returns (crops, samples, frame_size, counts):
-        crops    {player_id: [image, ...]}
-        samples  {player_id: [(x, y, half), ...]}   positions, each with its half
-        counts   {player_id: how many images that player ended up with}
+    Returns (crops_by_half, samples, frame_size, counts):
+        crops_by_half  {half: {player_id: [image, ...]}}
+        samples        {player_id: [(x, y, half), ...]}
+        counts         {(half, player_id): how many images}
     """
     players = sorted(player_config)
     target = max(1, per_player)
@@ -306,7 +341,7 @@ def tag_interactive(cap, video_info, player_config: dict, per_player: int,
                   "check --from / --to and the video length")
     half = start_half if start_half in halves_available else halves_available[0]
 
-    crops = {pid: [] for pid in players}
+    crops = {h: {pid: [] for pid in players} for h in halves_available}
     samples = {pid: [] for pid in players}
     history: list = []          # (pid, half) in tag order, for undo
     position = {h: 0 for h in pools}
@@ -340,9 +375,10 @@ def tag_interactive(cap, video_info, player_config: dict, per_player: int,
 
     both = len(halves_available) > 1
     logs.section("HOW TO TAG")
-    logs.info(f"Give every player {target} reference image(s). Box whoever is "
-              f"clear in the frame in front of you - they do not all have to "
-              f"come from the same frame.")
+    logs.info(f"Give every player {target} reference image(s) IN EACH HALF "
+              f"({target * len(halves_available)} each in total). Box whoever "
+              f"is clear in the frame in front of you - they do not all have "
+              f"to come from the same frame.")
     logs.info("")
     logs.info("Draw the box around the WHOLE player, feet included - the bottom")
     logs.info("edge is what records where they stand on court.")
@@ -358,10 +394,10 @@ def tag_interactive(cap, video_info, player_config: dict, per_player: int,
     logs.table(["key", "what it does"], keys)
     logs.blank()
     if both:
-        logs.info("Both halves are available. A player who is blocked or "
-                  "facing away all through one half")
-        logs.info("is often perfectly clear in the other - press h and tag "
-                  "them there instead.")
+        logs.info("Each half needs its own images: the teams change ends, so "
+                  "the same player")
+        logs.info("looks different in the two halves. Press h to switch and "
+                  "fill in the other side.")
     else:
         logs.warn(f"only half {half} has frames to offer, so every tag will "
                   f"come from it",
@@ -376,27 +412,32 @@ def tag_interactive(cap, video_info, player_config: dict, per_player: int,
     cv2.setMouseCallback(window, on_mouse)
 
     def progress_text():
-        bits = []
-        for pid in players:
-            done = len(crops[pid])
-            bits.append(f"{pid}:{done}/{target}")
-        return "   ".join(bits)
+        return "   ".join(f"{pid}:{len(crops[half][pid])}/{target}"
+                          for pid in players)
+
+    def outstanding(in_half):
+        return [p for p in players if len(crops[in_half][p]) < target]
 
     def redraw(frame, frame_index):
         display = frame.copy()
         height, width = display.shape[:2]
         cv2.rectangle(display, (0, 0), (width, 96), (0, 0, 0), -1)
-        remaining = [str(p) for p in players if len(crops[p]) < target]
+        remaining = [str(p) for p in outstanding(half)]
+        other = [h for h in halves_available if h != half]
+        tail = ("   |   half %d still needs %d" % (
+            other[0], len(outstanding(other[0])))) if other and outstanding(other[0]) else ""
         cv2.putText(display, f"HALF {half}     {logs.mmss(video_info.seconds_of(frame_index))}"
-                             f"     frame {frame_index}",
+                             f"     frame {frame_index}{tail}",
                     (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (0, 255, 255), 2)
         colour = (0, 255, 0) if not remaining else (255, 255, 255)
         cv2.putText(display, progress_text(), (12, 58),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
         if remaining:
-            hint = "still need: " + ", ".join(remaining)
+            hint = f"half {half} still needs: " + ", ".join(remaining)
+        elif any(outstanding(h) for h in halves_available):
+            hint = "this half is done - press h for the other one"
         else:
-            hint = "everyone has enough - press q to finish"
+            hint = "both halves complete - press q to finish"
         cv2.putText(display, hint + "    |   "
                     + ("h switch half   " if both else "")
                     + "n next frame   b back   u undo   q done",
@@ -436,14 +477,14 @@ def tag_interactive(cap, video_info, player_config: dict, per_player: int,
                 logs.detail(f"switched to half {half}")
                 next_frame = True
             elif key == ord("u") and history:
-                pid, _ = history.pop()
-                if crops[pid]:
-                    crops[pid].pop()
+                pid, was_half = history.pop()
+                if crops[was_half][pid]:
+                    crops[was_half][pid].pop()
                 if samples[pid]:
                     samples[pid].pop()
                 logs.info(f"  undid the last tag for "
-                          f"{player_config[pid]['name']} "
-                          f"({len(crops[pid])}/{target})")
+                          f"{player_config[pid]['name']} in half {was_half} "
+                          f"({len(crops[was_half][pid])}/{target})")
                 state["pending"] = None
                 redraw(frame, frame_index)
             elif ord("1") <= key <= ord(str(min(9, len(players)))) \
@@ -454,12 +495,12 @@ def tag_interactive(cap, video_info, player_config: dict, per_player: int,
                     crop = frame[max(0, y1):y2, max(0, x1):x2].copy()
                     if crop.size:
                         height, width = frame.shape[:2]
-                        crops[pid].append(crop)
+                        crops[half][pid].append(crop)
                         samples[pid].append((float((x1 + x2) / 2 / width),
                                              float(y2 / height), int(half)))
                         history.append((pid, half))
                         logs.ok(f"{player_config[pid]['name']}: "
-                                f"{len(crops[pid])}/{target}  "
+                                f"{len(crops[half][pid])}/{target}  "
                                 f"(half {half}, "
                                 f"{logs.mmss(video_info.seconds_of(frame_index))})")
                         state["pending"] = None
@@ -467,19 +508,22 @@ def tag_interactive(cap, video_info, player_config: dict, per_player: int,
 
     cv2.destroyWindow(window)
 
-    counts = {pid: len(crops[pid]) for pid in players}
-    missing = [pid for pid in players if counts[pid] == 0]
-    if missing:
-        names = ", ".join(player_config[p]["name"] for p in missing)
-        logs.fail(f"these players were never tagged: {names}",
+    counts = {(h, pid): len(crops[h][pid])
+              for h in halves_available for pid in players}
+    never = [pid for pid in players
+             if all(counts[(h, pid)] == 0 for h in halves_available)]
+    if never:
+        logs.fail("these players were never tagged: "
+                  + ", ".join(player_config[p]["name"] for p in never),
                   "every player needs at least one reference image - re-run "
                   "and tag them, pressing h to look in the other half if they "
                   "are hard to see in this one")
-    short = [pid for pid in players if counts[pid] < target]
+    short = [(h, pid) for (h, pid), n in counts.items() if n < target]
     if short:
-        logs.warn(f"{len(short)} player(s) have fewer than {target} images: "
-                  + ", ".join(f"{player_config[p]['name']} ({counts[p]})"
-                              for p in short),
-                  "that is allowed, but those players are matched from less "
-                  "evidence - re-run to add more")
+        logs.warn(f"{len(short)} player/half combination(s) have fewer than "
+                  f"{target} images: "
+                  + ", ".join(f"{player_config[p]['name']} h{h} ({counts[(h,p)]})"
+                              for h, p in sorted(short)),
+                  "allowed, but those are matched from less evidence - re-run "
+                  "to top them up")
     return crops, samples, frame_size, counts

@@ -66,17 +66,33 @@ class Settings:
     window_fraction: float = 0.6      # only the first 60% of the window: the release
     processing_width: int = 1280
 
-    # picking the thrower out of the attacking team
-    weight_ball: float = 0.5          # how close to where the ball came from
-    weight_forward: float = 0.3       # throwers step in toward the centre
-    weight_pose: float = 0.2          # how much the body looks mid-throw
-    use_ball: bool = True
+    # picking out the thrower. The weights are compared WITHIN each frame:
+    # every candidate is ranked against the others, so a camera that is closer
+    # or noisier than yesterday's does not change the answer.
+    weight_motion: float = 0.4        # the thrower moves; everyone else waits
+    weight_upright: float = 0.6       # the thrower is on their feet
+    weight_ball: float = 0.0          # closeness to the detected ball
+    weight_forward: float = 0.0       # stepping in toward the centre
+    weight_pose: float = 0.0          # arm extension and stance width
+    localise_among: str = "everyone"  # "everyone" or "attackers"
+    motion_gap: int = 2               # frames apart the motion is measured over
+    use_ball: bool = False
 
     # naming that player
+    # A goalball-trained detector that labels the thrower directly. When one
+    # is available it is asked first; the motion rule below catches the throws
+    # it misses. 73% correct thrower against 46% for motion alone.
+    thrower_model: Optional[str] = None
+    thrower_confidence: float = 0.15
+
     team_grouping: str = "relative"   # "relative" (robust) or "absolute"
     team_source: str = "position"     # "position" (robust) or "posture"
     release_source: str = "csv"       # "csv" (ball release point) or "thrower"
-    weight_position: float = 1.0      # 1.0 = position only; appearance measured to hurt
+    # 0.75 = mostly position, a little appearance. With a localiser that
+    # really finds the thrower, the crop is genuinely that player, and
+    # appearance fixes three mistakes for every one it causes. Below ~0.65 it
+    # tips over and starts doing harm.
+    weight_position: float = 0.75
     position_spread: float = 0.12     # how far a player may stray from their home zone
     appearance_top_k: int = 3
     flip_augment: bool = True
@@ -103,7 +119,23 @@ class Settings:
                                              "beyond timestamps (~50% correct)")
         logs.kv("identity weighting", f"{self.weight_position:.0%} court position, "
                                       f"{1 - self.weight_position:.0%} appearance")
-        logs.kv("ball detection", "on" if self.use_ball else "off (pose only)")
+        weights = [(self.weight_motion, "movement"),
+                   (self.weight_upright, "standing up"),
+                   (self.weight_ball, "nearness to the ball"),
+                   (self.weight_forward, "stepping in"),
+                   (self.weight_pose, "throwing pose")]
+        if self.thrower_model:
+            logs.kv("thrower picked by", "the goalball detector's own "
+                                         "'throwing_player' class")
+            logs.kv("when it finds nobody", "  ".join(f"{name} {w:.0%}"
+                                                      for w, name in weights if w))
+        else:
+            logs.kv("thrower picked by", "  ".join(f"{name} {w:.0%}"
+                                                   for w, name in weights if w))
+        logs.kv("picked from", "every player on court"
+                               if self.localise_among == "everyone"
+                               else "the attacking team only")
+        logs.kv("ball detection", "on" if self.use_ball else "off")
         logs.kv("team grouping", "by colour, ranked within each frame"
                                  if self.team_grouping == "relative"
                                  else "by colour, each crop on its own")
@@ -134,7 +166,7 @@ class Predictor:
     """Holds the models and reference data; call `predict` once per throw."""
 
     def __init__(self, cap, video_info, court, half_plan, player_config,
-                 gallery_crops, settings: Settings):
+                 gallery_crops, settings: Settings, crops_by_half=None):
         self.cap = cap
         self.video = video_info
         self.court = court
@@ -154,6 +186,11 @@ class Predictor:
         teams.check_prototypes(gallery_crops, player_config, self.kit_prototypes)
 
         self.embedder = reid.make(settings.appearance_model)
+        # One bank per half where the gallery has images for it, so a throw is
+        # always compared against how the players looked in that half.
+        self.banks = (reid.banks_by_half(self.embedder, crops_by_half,
+                                         flip_augment=settings.flip_augment)
+                      if crops_by_half else {})
         self.reference_vectors, self.reference_labels = reid.reference_bank(
             self.embedder, gallery_crops, flip_augment=settings.flip_augment)
 
@@ -209,7 +246,14 @@ class Predictor:
             frame = read_frame(self.cap, int(index), s.processing_width)
             if frame is None:
                 continue
+            # straight after read_frame the capture sits at index + 1, so the
+            # motion read costs no extra seek
+            motion = (detect.motion_between(self.cap, frame,
+                                            s.processing_width, s.motion_gap)
+                      if s.weight_motion else None)
             found = detect.people(frame, self.court, s.pose_model)
+            for person in found:
+                person["motion"] = detect.motion_in_box(motion, person["box"])
             if s.team_grouping == "relative":
                 teams.group_relatively(found, self.kit_prototypes,
                                        self.team_sizes)
@@ -234,20 +278,47 @@ class Predictor:
         base["attacking_team"] = attacker_team
 
         # -- pick the thrower out of the attacking team, frame by frame ----
-        thrower_crops, thrower_positions = [], []
-        for _, found in observed:
-            attackers = [p for p in found if p.get("team") == attacker_team]
-            if not attackers:
+        # Two independent opinions per frame, kept apart on purpose. Mixing
+        # them is the trap: if the detector names the thrower in two frames
+        # and the motion rule guesses someone else in the other three, the
+        # median of all five positions lands between two players and means
+        # nothing. So the detector's frames win outright whenever it has any.
+        named_crops, named_positions = [], []
+        guessed_crops, guessed_positions = [], []
+        for index, found in observed:
+            if s.thrower_model:
+                frame = read_frame(self.cap, index, s.processing_width)
+                named = (detect.throwing_players(
+                    frame, self.court, s.thrower_model, s.thrower_confidence)
+                    if frame is not None else [])
+                if named:
+                    best = max(named, key=lambda p: p["confidence"])
+                    named_crops.append(best["crop"])
+                    named_positions.append(best["feet_norm"])
+                    continue
+            if s.localise_among == "attackers":
+                candidates = [p for p in found if p.get("team") == attacker_team]
+            else:
+                candidates = found
+            if not candidates:
                 continue
-            for person in attackers:
-                person["cost"] = self._localisation_cost(person, ball_point)
-            best = min(attackers, key=lambda p: p["cost"])
-            thrower_crops.append(best["crop"])
-            thrower_positions.append(best["feet_norm"])
+            costs = self._localisation_costs(candidates, ball_point)
+            best = candidates[int(np.argmin(costs))]
+            guessed_crops.append(best["crop"])
+            guessed_positions.append(best["feet_norm"])
+
+        if named_crops:
+            thrower_crops, thrower_positions = named_crops, named_positions
+            located_by = "the goalball detector"
+        else:
+            thrower_crops, thrower_positions = guessed_crops, guessed_positions
+            located_by = "movement and posture"
+        base["frames_from_detector"] = len(named_crops)
+        base["located_by"] = located_by
 
         if not thrower_crops:
             return self._unresolved(
-                base, f"no {attacker_team} player was detected in this window")
+                base, "no player could be picked out in this window")
 
         # -- where was the throw released from? ----------------------------
         release, release_from = self._release_position(throw, thrower_positions)
@@ -284,7 +355,7 @@ class Predictor:
             return self._unresolved(
                 base, f"team '{attacker_team}' is not in the gallery roster")
 
-        appearance = self._appearance_scores(thrower_crops, candidates)
+        appearance = self._appearance_scores(thrower_crops, candidates, half)
         scores, how = self._identity_scores(candidates, appearance, zones, release)
         chosen = int(max(scores, key=scores.get))
 
@@ -318,25 +389,56 @@ class Predictor:
     # Pieces
     # ------------------------------------------------------------------
 
-    def _localisation_cost(self, person, ball_point) -> float:
+    @staticmethod
+    def _spread(values) -> np.ndarray:
         """
-        Lower is more likely to be the thrower. Three costs, all scaled to the
-        frame diagonal so they are comparable and resolution-independent.
+        Scale a list to 0..1 against the others in the same frame.
+
+        Everything is judged relatively, never against a fixed threshold. How
+        much a player's pixels change depends on the camera, the compression
+        and how near they are; which of the players on court changed MOST does
+        not. The same goes for how flat a detection box is. When every
+        candidate ties, nobody is favoured.
+        """
+        array = np.asarray(values, dtype=float)
+        low, high = array.min(), array.max()
+        if high - low < 1e-9:
+            return np.full(len(array), 0.5)
+        return (array - low) / (high - low)
+
+    def _localisation_costs(self, candidates: list, ball_point) -> np.ndarray:
+        """
+        Lower is more likely to be the thrower, one score per candidate.
+
+        The thrower moves and is on their feet; the defenders are already down
+        and the thrower's own team-mates are standing still. Those two signals
+        do nearly all the work - see docs/RESULTS.md for what each contributes.
         """
         s = self.settings
-        x, y = person["feet"]
-        if ball_point is None:
-            ball_cost = 0.5             # unknown: neither helps nor hurts anyone
-        else:
-            ball_cost = min(np.hypot(x - ball_point[0], y - ball_point[1])
-                            / self.frame_diagonal, 1.0)
-        forward_cost = min(np.hypot(x - self.court_centre_px[0],
-                                    y - self.court_centre_px[1])
-                           / self.frame_diagonal, 1.0)
-        pose_cost = 1.0 - person["throw_pose"]
-        return (s.weight_ball * ball_cost
-                + s.weight_forward * forward_cost
-                + s.weight_pose * pose_cost)
+        moving = self._spread([c.get("motion", 0.0) for c in candidates])
+        # a low box width/height means upright, which is what we want
+        upright = 1.0 - self._spread([c["flatness"] for c in candidates])
+        posing = self._spread([c["throw_pose"] for c in candidates])
+
+        costs = (s.weight_motion * (1.0 - moving)
+                 + s.weight_upright * (1.0 - upright)
+                 + s.weight_pose * (1.0 - posing))
+
+        if s.weight_ball or s.weight_forward:
+            for i, candidate in enumerate(candidates):
+                x, y = candidate["feet"]
+                if ball_point is None:
+                    ball_cost = 0.5     # unknown: helps and hurts nobody
+                else:
+                    ball_cost = min(np.hypot(x - ball_point[0],
+                                             y - ball_point[1])
+                                    / self.frame_diagonal, 1.0)
+                forward_cost = min(np.hypot(x - self.court_centre_px[0],
+                                            y - self.court_centre_px[1])
+                                   / self.frame_diagonal, 1.0)
+                costs[i] += (s.weight_ball * ball_cost
+                             + s.weight_forward * forward_cost)
+        return costs
 
     def _release_position(self, throw, thrower_positions) -> tuple:
         """The point used to name the thrower, in normalised frame coordinates."""
@@ -351,13 +453,22 @@ class Predictor:
         return ((float(np.median(array[:, 0])), float(np.median(array[:, 1]))),
                 "video-localised thrower")
 
-    def _appearance_scores(self, crops, candidates) -> dict:
+    def _appearance_scores(self, crops, candidates, half) -> dict:
+        """
+        Compare the thrower's crop against this half's references.
+
+        Falls back to every reference the gallery has if that half was never
+        tagged - worse than like-for-like, better than nothing.
+        """
         vectors = reid.embed(self.embedder, crops,
                              flip_augment=self.settings.flip_augment)
         query = vectors.mean(axis=0)
         query /= (np.linalg.norm(query) + 1e-8)
+        bank = self.banks.get(int(half))
+        reference, labels = bank if bank else (self.reference_vectors,
+                                               self.reference_labels)
         return reid.similarity_to_players(
-            query, self.reference_vectors, self.reference_labels, candidates,
+            query, reference, labels, candidates,
             top_k=self.settings.appearance_top_k)
 
     def _identity_scores(self, candidates, appearance, zones, release) -> tuple:

@@ -133,8 +133,10 @@ def main() -> None:
                              "only. Without a half-time from either source the "
                              "second half cannot be offered and h does nothing.")
     parser.add_argument("--rounds", type=int, default=5,
-                        help="reference images per player (default: 5). More is "
-                             "better, but 5 is plenty for the position signal.")
+                        help="reference images per player PER HALF (default: "
+                             "5, so 10 each across both halves). Each half "
+                             "needs its own: the teams change ends, so a "
+                             "player looks different in the two.")
     parser.add_argument("--roster", default=None,
                         help="JSON file with the players' names and teams "
                              "(defaults to the 'roster' block in --config)")
@@ -197,14 +199,15 @@ def main() -> None:
     logs.step_done()
 
     logs.step(4, 4, "Tagging")
-    crops, samples, frame_size, counts = gallery_module.tag_interactive(
+    crops_by_half, samples, frame_size, counts = gallery_module.tag_interactive(
         cap, info, roster, args.rounds, pools, start_half=start_half)
     cap.release()
     cv2.destroyAllWindows()
     logs.blank()
-    gallery_module.save(cfg.gallery_dir, crops, roster, samples,
+    gallery_module.save(cfg.gallery_dir, crops_by_half, roster, samples,
                         gallery_half=start_half, frame_size=frame_size)
-    logs.step_done(f"{sum(counts.values())} reference image(s)")
+    logs.step_done(f"{sum(counts.values())} reference image(s) across "
+                   f"{len(crops_by_half)} half/halves")
 
     # Read it straight back and show what the home zones imply. A silent
     # gallery is a gallery you cannot trust.

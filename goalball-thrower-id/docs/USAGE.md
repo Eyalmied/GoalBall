@@ -1,5 +1,9 @@
 # Usage — start to finish
 
+> Looking for just the commands, in order, with what to check after each?
+> That is **[RUNBOOK.md](RUNBOOK.md)**. This page covers the same ground more
+> slowly, with the reasoning behind each step.
+
 Everything you need to go from a match video to a scored list of throwers. No
 knowledge of the internals is assumed; follow the steps in order.
 
@@ -108,8 +112,9 @@ asking of you.
 python scripts/build_gallery.py --config config/mygame.json --half 1
 ```
 
-You give every player five reference images. Each tag records what that player
-looks like **and where they stand on court** — their home zone. The home zone
+You give every player five reference images **in each half** — 60 tags in all.
+Each tag records what that player looks like **and where they stand on
+court** — their home zone. The home zone
 is the part that matters: identical uniforms and blackout eyeshades defeat
 every appearance model, so position is what separates two teammates.
 
@@ -283,19 +288,19 @@ python scripts/evaluate.py --config config/mygame.json --holdout 0.3
 
 ```
 HELD OUT - this is the number that counts
-    labelled throws        20
-    of those, predicted    20 (100.0%)
+    labelled throws        52
+    of those, predicted    52 (100.0%)
 
-    CORRECT THROWER        17/20 = 85.0%
-    correct team           20/20 = 100.0%
-    right player, given    17/20 = 85.0%
+    CORRECT THROWER        38/52 = 73.1%
+    correct team           52/52 = 100.0%
+    right player, given    38/52 = 73.1%
       the right team
     guessing would give    33.3%
 ```
 
-(That is a real held-out block from the reference match. Note the sample size:
-20 throws means every throw is worth 5 percentage points, so a held-out figure
-swings a lot. The all-throws number for the same run is 74.1%.)
+(A real held-out block from the reference match. The all-throws number for the
+same run is 68.5%; held-out sets of 52 throws swing by a few points either
+way.)
 
 `--holdout 0.3` splits the throws the same way every run. Tune against the
 "tune" block; only read the "held out" block at the end. Quoting a number you
@@ -342,8 +347,8 @@ setup files.
 
 | | |
 |---|---|
-| Correct team | around **97%** |
-| Correct thrower | around **74%** with `--release-source csv`, around **50%** video-only |
+| Correct team | around **99%** |
+| Correct thrower | around **69%** |
 | Confidence | means something: the calls at 0.7 and above are mostly right. `evaluate.py` prints accuracy split by confidence so you can check that on your own footage |
 | Posture vs the end | 90%+ agreement between the posture team and the end the ball came from. Lower means either the half is wrong or one team is too far from the camera for the kit colours to separate — the answer's team comes from position, so it survives, but it is worth knowing |
 

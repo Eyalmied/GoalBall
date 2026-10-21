@@ -42,7 +42,7 @@ The players do not change — just where they stand:
 | **changes** | each player's home zone: the point moves to the opposite end of the court — *measured directly* if you tagged them in both halves, mirrored if not |
 | unchanged | the player ids — player 3 is still player 3 |
 | unchanged | the names, and which team each player is on |
-| unchanged | the reference images — a player looks the same in both halves |
+| **changes** | which reference images are used — each half has its own set |
 | unchanged | the court itself — same physical court both halves |
 
 Nothing is renumbered, renamed or reassigned. The half only decides *where*
@@ -113,11 +113,15 @@ Tag from **either** half — press `h` during tagging to switch, as often as you
 like, for any player. Each position is stored with the half it came from, so
 the two never get averaged together.
 
-A player tagged in both halves ends up with a **measured** home zone for each,
-and nothing is mirrored for them. A player tagged in only one gets their zone
-mirrored into the other, which is good but not as good. Tagging a player in
-both halves costs the same number of boxes as tagging them twice in one, so
-there is no reason not to.
+Each half gets **its own reference images and its own home zones**, and the
+builder asks for five images per player per half. This is not tidiness: a
+player near the camera in one half is at the far end in the other, so the
+crops differ in size, lighting and which way they face. A throw is matched
+against the half it happened in.
+
+A player tagged in both halves ends up with a **measured** zone for each, and
+nothing is mirrored for them. A player tagged in only one gets their zone
+mirrored across, which works but carries the mirror's error.
 
 `--half` says which half to start in, and which one the gallery reports as its
 reference (`gallery_half` in `manifest.json`).
@@ -195,7 +199,7 @@ frame, so the flip is exact and reversible.
 |---|---|
 | Home-zone **positions** | **yes** — measured per half where you tagged, mirrored end-for-end where you did not |
 | Player ids, names, teams | no — read straight from the roster, never altered |
-| Reference images | no — a player looks the same in both halves |
+| Reference images | **yes** — each half has its own set, and a throw is matched against its own half |
 | The court fence | no — same physical court both halves |
 | Which team is attacking | no — decided by **posture**: defenders lie flat to block, attackers stand. That rule does not care which end anyone is at, which is exactly why it survives the change of ends |
 | The ball release point read from the CSV | no — it is measured in the footage, so it is already in the right half's geometry |

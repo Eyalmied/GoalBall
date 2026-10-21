@@ -134,6 +134,24 @@ def embed(embedder, crops: list, flip_augment: bool = True) -> np.ndarray:
     return vectors
 
 
+def banks_by_half(embedder, crops_by_half: dict, max_per_player: int = 0,
+                  flip_augment: bool = True) -> dict:
+    """
+    {half: (vectors, player_ids)} - one reference bank per half.
+
+    A throw is matched against the half it happened in. The teams change ends,
+    so the same player is near the camera in one half and at the far end in
+    the other: different size, different lighting, often facing the other way.
+    Comparing across halves compares two different-looking things.
+    """
+    out = {}
+    for half in sorted(crops_by_half):
+        logs.info(f"  half {half}:")
+        out[int(half)] = reference_bank(embedder, crops_by_half[half],
+                                        max_per_player, flip_augment)
+    return out
+
+
 def reference_bank(embedder, crops: dict, max_per_player: int = 0,
                    flip_augment: bool = True) -> tuple:
     """

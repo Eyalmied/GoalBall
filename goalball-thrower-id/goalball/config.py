@@ -52,12 +52,12 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 # Keys whose value is a path, anchored at the repo folder when it is relative.
 PATH_KEYS = ("video", "events", "gallery_dir", "court_file", "labels",
-             "predictions", "pose_model", "ball_model")
+             "predictions", "pose_model", "ball_model", "thrower_model")
 
 # Model keys are special: a BARE file name like "yolov8m-pose.pt" is a model
 # name, which ultralytics downloads on first use. Only a value that actually
 # looks like a path ("weights/best.pt", "../best.pt") is anchored.
-MODEL_KEYS = ("pose_model", "ball_model")
+MODEL_KEYS = ("pose_model", "ball_model", "thrower_model")
 
 DEFAULTS: dict = {
     "name": "unnamed game",
@@ -69,6 +69,10 @@ DEFAULTS: dict = {
     "predictions": "thrower_predictions.json",
     "pose_model": "yolov8m-pose.pt",
     "ball_model": "yolov8m.pt",
+    # The project's own goalball detector, whose class 0 is "throwing_player".
+    # This repo lives inside that project, so the default path finds it. When
+    # it is not there the pipeline says so and falls back to movement+posture.
+    "thrower_model": "../Model Weights/best.pt",
     "half2_start": None,
     "roster": {},
     "source": None,
@@ -89,6 +93,7 @@ class GameConfig:
     predictions: str = DEFAULTS["predictions"]
     pose_model: str = DEFAULTS["pose_model"]
     ball_model: str = DEFAULTS["ball_model"]
+    thrower_model: Optional[str] = DEFAULTS["thrower_model"]
     half2_start: Optional[str] = None
     roster: dict = field(default_factory=dict)
     source: Optional[str] = None       # which config file this came from
