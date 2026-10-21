@@ -12,24 +12,27 @@ wear identical uniforms, every player wears blackout eyeshades, and at
 broadcast distance a jersey number is about twenty pixels tall and usually
 behind the net. No faces, no numbers, and colour only ever tells you the team.
 
-So this does something else. It works out **which player** from where the throw
-came from, matched against home zones recorded once by hand — and the team
-comes free, because the two teams stand at opposite ends of the court. Posture
-tells it which team is attacking (defenders throw themselves flat to block,
-attackers stay on their feet), which is what picks the thrower out of the
-players on court. Nothing depends on seeing a face or reading a number.
+So this does something else. A goalball-trained detector points at the player
+who is throwing; we take **where they are standing** and match it against home
+zones you recorded once by hand. The team comes free, because the two teams
+stand at opposite ends of the court. Nothing depends on seeing a face or
+reading a number.
 
-| | Measured on 85 hand-labelled throws |
+When the detector finds nobody — about one throw in six — it falls back to the
+two cues that give the thrower away anyway: **the thrower is the one moving**,
+and **the thrower is on their feet** while the defenders are already flat.
+
+| | Measured on 181 hand-labelled throws, both halves |
 |---|---|
-| Correct team | **97.6%** |
-| Correct thrower | **74.1%** |
-| Strictly video-only | ~50% |
-| Guessing | 17% |
+| Correct team | **99.4%** |
+| Correct thrower | **72.4%** |
+| half 1 / half 2 | 74.4% / 70.5% |
+| Guessing | 17% / 50% |
 
-About 77% is the arithmetic ceiling, and
-[docs/RESULTS.md](docs/RESULTS.md) shows why: two teammates genuinely throw
-from overlapping parts of the court, and nothing at this resolution separates
-them.
+Around 80% is the arithmetic ceiling, and
+[docs/RESULTS.md](docs/RESULTS.md) shows why: in 17% of throws a player
+genuinely throws from a team-mate's spot, and nothing at this resolution
+separates them.
 
 ---
 
@@ -47,31 +50,44 @@ python scripts/run_pipeline.py --config config/mygame.json --half 1
 `run_pipeline.py` is the one command to remember. It works out what is already
 done, does what is missing, and stops with a plain explanation if it needs you:
 
-1. **tag the players** once — opens a window, about five minutes
+1. **tag the players** once — opens a window, about eight minutes (`h` switches half)
 2. **mark the court** once — click four corners
 3. **predict** every throw — about a second each
 4. **measure it**, if you have labelled some throws
 
-Step by step, with every key press and every flag:
-**[docs/USAGE.md](docs/USAGE.md)**.
+Every command in order, with what to check after each:
+**[docs/RUNBOOK.md](docs/RUNBOOK.md)**.
 
 ---
 
 ## Say which half
 
-```bash
-python scripts/run_pipeline.py --config config/mygame.json --half 1
-python scripts/run_pipeline.py --config config/mygame.json --half 2
-python scripts/run_pipeline.py --config config/mygame.json --half auto --half2-start 22:00
+```json
+{ "half2_start": "22:00" }
 ```
+
+```bash
+python scripts/run_pipeline.py --config config/mygame.json
+```
+
+A match is assumed to have **two halves**, so every run covers both and splits
+them at `half2_start` — the single source of truth for when the ends change.
+Every step reads it from there, so none of them can disagree.
+
+It is required for that reason: leave it out and the run stops rather than
+quietly treating the whole video as one half, which is what matches
+second-half throws against the wrong end of the court. If your video really is
+a single half, say so with `--half 1` or `--half 2`.
 
 Teams change ends at half-time, which moves every player's home zone to the
 opposite end of the court. Since identity *is* position here, telling it the
 wrong half does not make the answer slightly worse — it inverts it.
 
-Tag the gallery inside one half and name it (`build_gallery.py --half 1`); it
-is stored with the gallery, and every later run mirrors the zones as needed.
-`--half auto` handles a video that covers the whole match in one pass.
+When tagging, `h` switches between the halves, so you can take each player's
+reference images from wherever they are clearest. Every position is stored with
+the half it came from: tag a player in both and they get a *measured* zone for
+each, tag them in one and the other is mirrored. A video covering the whole
+match is then handled in one pass.
 
 Every run prints what it worked out, and it is worth reading those two lines:
 
@@ -107,7 +123,8 @@ setting: **[docs/HALVES.md](docs/HALVES.md)**.
     "team_separation": 0.81,
     "frame_coverage": 1.0
   },
-  "decided_by": "court position",
+  "decided_by": "court position (75%) plus appearance",
+  "located_by": "the goalball detector",
   "frames_voted": 5,
   "ball_seen": true,
   "release_position": [0.34, 0.39],
@@ -148,7 +165,8 @@ Every script takes `--help`, `--verbose`, and the same `--config`.
 
 | | |
 |---|---|
-| **[docs/USAGE.md](docs/USAGE.md)** | run it, step by step, including what each window wants |
+| **[docs/RUNBOOK.md](docs/RUNBOOK.md)** | **every command in order, with what to check after each** |
+| **[docs/USAGE.md](docs/USAGE.md)** | the same ground at more length, with the reasoning |
 | **[docs/HALVES.md](docs/HALVES.md)** | halves and changing ends — the one thing to get right |
 | **[docs/DESIGN.md](docs/DESIGN.md)** | how it works and why it is built this way |
 | **[docs/RESULTS.md](docs/RESULTS.md)** | what was measured, and what it can realistically reach |
@@ -162,7 +180,13 @@ Every script takes `--help`, `--verbose`, and the same `--config`.
 - Python 3.9 or newer, and a display for the two setup steps
 - The match video, and the throw detector's CSV — **only the timestamps** are
   used to decide a thrower
-- One appearance model: `torchreid` (better) or `transformers` (easier)
+- One appearance model: `torchreid` (better) or `transformers` (easier). The
+  gallery's own labels are used to learn which part of the embedding actually
+  tells these players apart — without that step the raw embedding puts two
+  photos of one player further apart than two different players
+- Optionally the project's `Model Weights/best.pt`, whose `throwing_player`
+  class picks the thrower directly. Without it the pipeline falls back to
+  movement and posture, at a cost of about 22 points
 - No GPU required; roughly a second per throw on a laptop CPU
 
 ---

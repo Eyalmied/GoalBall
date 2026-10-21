@@ -12,7 +12,7 @@ WHAT WE DELIBERATELY DO NOT TAKE
 
 THE ONE OPTIONAL EXTRA
     "From Coord" - the ball's release point. It is used only as the *position*
-    of the thrower when the run asks for it (`--release_source csv`), never to
+    of the thrower in the labelling tool only, never to
     decide the team. Turning it on is the difference between ~71% and ~50%
     correct-thrower; see docs/RESULTS.md.
 """
@@ -104,11 +104,9 @@ def load(csv_path: str, fps: float) -> list:
     logs.ok(f"{len(throws)} throws read from the {schema}")
     logs.kv("first throw at", throws[0].start_mmss)
     logs.kv("last throw at", throws[-1].start_mmss)
-    logs.kv("ball release point", f"present on {with_release}/{len(throws)} throws")
-    if with_release == 0:
-        logs.warn("no ball release points in the CSV",
-                  "the run will fall back to video-only positioning "
-                  "(--release_source thrower); accuracy is lower")
+    logs.kv("ball release point", f"present on {with_release}/{len(throws)} "
+                                  f"throws (used only to seed the labelling "
+                                  f"tool, never by the predictor)")
     return throws
 
 

@@ -25,7 +25,7 @@ import pathlib
 
 import cv2
 
-from _common import add_half_flags, base_parser, resolve
+from _common import add_half_flags, base_parser, resolve, resolve_halves
 from goalball import court as court_module
 from goalball import events as events_module
 from goalball import gallery as gallery_module
@@ -66,9 +66,8 @@ def main() -> None:
     logs.step(2, 3, "Loading the gallery so you can see who is who")
     crops, player_config, meta = gallery_module.load(cfg.gallery_dir)
     court = court_module.load(cfg.court_file)
-    plan = halves.build(args.gallery_half or meta["gallery_half"], args.half,
-                        args.half2_start or cfg.half2_start, info.fps,
-                        mirror_about=args.mirror_about)
+    plan = resolve_halves(args, cfg, info.fps,
+                          args.gallery_half or meta["gallery_half"])
     plan.describe(player_config, court)
     player_count = len(player_config)
     sheet = gallery_module.contact_sheet(crops, player_config)

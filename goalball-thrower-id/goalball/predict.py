@@ -3,9 +3,9 @@ The predictor: one throw in, one named thrower out.
 
 Two things have to be worked out, and they use different signals:
 
-    WHERE the throw came from   the ball's release point, or failing that the
-                                player picked out of the attacking team by
-                                proximity, forwardness and throwing pose
+    WHERE the throw came from   the player the goalball detector labels as the
+                                thrower; failing that, the player picked out
+                                of everyone on court by movement and posture
 
     WHOSE home zone that is     matched against the zones recorded when the
                                 gallery was tagged, mirrored if this half is
@@ -21,6 +21,14 @@ throw, and voted - so one blurred or blocked frame cannot flip the answer.
 Every prediction carries a confidence built from three readable parts, so weak
 calls can be pulled out and reviewed instead of silently trusted.
 
+WHEN THE DETECTOR FINDS NOBODY  (--trust-position-always turns this off)
+    The crop then comes from the movement-and-posture rule, which is not
+    reliably the thrower - so where that player was standing says nothing
+    about who threw. Measured on labelled throws it lands on chance: 34.6%
+    against 33.3% for guessing. Blending a signal that is known to be noise
+    only drags the answer around, so those throws fall back to the attacking
+    team and let appearance alone name the player: 50.0% instead of 34.6%.
+
 WHERE THE TEAM IN THE ANSWER COMES FROM  (--team-source)
     "position" (the default, whenever the gallery has home zones)
         The thrower is named against ALL the players' home zones, and the
@@ -28,22 +36,17 @@ WHERE THE TEAM IN THE ANSWER COMES FROM  (--team-source)
         occupy opposite ends of the court, so a release point near one end
         cannot look like a player at the other, and no separate team step is
         needed at all.
-        Measured on the reference match: 97.6% correct team, 74.1% correct
-        thrower - better than restricting the candidates first (71.8%), and
-        better even than restricting them with a PERFECT team step (72.9%),
-        because a wrong restriction removes the right answer entirely.
 
     "posture"
-        The older behaviour: decide the attacking team from posture, then name
-        the thrower among that team's three players only. Necessary when the
-        gallery has no home zones, since appearance alone cannot cope with six
-        candidates. It is also the weak link across halves - see
-        goalball/teams.py - which is why it is no longer the default.
+        Decide the attacking team from posture, then name the thrower among
+        that team's three players only. Used automatically when the gallery
+        has no home zones, since appearance alone cannot cope with six
+        candidates.
 
     Posture is computed either way. It is what picks the thrower out of the
-    players on court for the video-only release source, it feeds the
-    confidence, and it is reported alongside every prediction so the two
-    signals can be compared.
+    players on court when the detector misses, it feeds the confidence, and
+    it is reported alongside every prediction so the two signals can be
+    compared.
 """
 
 from __future__ import annotations
@@ -66,27 +69,42 @@ class Settings:
     window_fraction: float = 0.6      # only the first 60% of the window: the release
     processing_width: int = 1280
 
-    # picking the thrower out of the attacking team
-    weight_ball: float = 0.5          # how close to where the ball came from
-    weight_forward: float = 0.3       # throwers step in toward the centre
-    weight_pose: float = 0.2          # how much the body looks mid-throw
-    use_ball: bool = True
+    # picking out the thrower. The weights are compared WITHIN each frame:
+    # every candidate is ranked against the others, so a camera that is closer
+    # or noisier than yesterday's does not change the answer.
+    weight_motion: float = 0.4        # the thrower moves; everyone else waits
+    weight_upright: float = 0.6       # the thrower is on their feet
+    motion_gap: int = 2               # frames apart the motion is measured over
 
     # naming that player
-    team_grouping: str = "relative"   # "relative" (robust) or "absolute"
-    team_source: str = "position"     # "position" (robust) or "posture"
-    release_source: str = "csv"       # "csv" (ball release point) or "thrower"
-    weight_position: float = 1.0      # 1.0 = position only; appearance measured to hurt
+    # A goalball-trained detector that labels the thrower directly. When one
+    # is available it is asked first; the motion rule below catches the throws
+    # it misses. 73% correct thrower against 46% for motion alone.
+    thrower_model: Optional[str] = None
+    thrower_confidence: float = 0.15
+
+    team_source: str = "position"     # "position", or "posture" without zones
+    # 0.60 = mostly position, with appearance as a real second opinion. Once
+    # the embedding is sharpened (sharpen_appearance below) appearance carries
+    # enough signal to overrule a confident but wrong position call; without
+    # that sharpening the best value is nearer 0.75.
+    weight_position: float = 0.75
     position_spread: float = 0.12     # how far a player may stray from their home zone
     appearance_top_k: int = 3
     flip_augment: bool = True
+    # Learn, from the gallery's own labels, which directions of the embedding
+    # separate players - and ignore the rest. See goalball/reid.py.
+    # Court position only means something if the crop really is the thrower.
+    # With no detector hit it does not, so position is dropped for that throw.
+    position_needs_detector: bool = True
+    sharpen_appearance: bool = True
+    appearance_dims: int = 3
 
     # confidence shaping
     confidence_temperature: float = 0.15
 
     # models
     pose_model: str = "yolov8m-pose.pt"
-    ball_model: str = "yolov8m.pt"
     appearance_model: str = "osnet"
 
     def describe(self) -> None:
@@ -95,18 +113,23 @@ class Settings:
                                     f"of each throw)")
         logs.kv("processing width", f"{self.processing_width} px")
         logs.kv("appearance model", self.appearance_model)
-        if self.release_source == "csv":
-            logs.kv("thrower position from", "the CSV ball release point "
-                                             "(most accurate: ~74% correct)")
-        else:
-            logs.kv("thrower position from", "the video only, no CSV fields "
-                                             "beyond timestamps (~50% correct)")
+        logs.kv("thrower position from", "where the thrower was standing "
+                                         "in the video")
         logs.kv("identity weighting", f"{self.weight_position:.0%} court position, "
                                       f"{1 - self.weight_position:.0%} appearance")
-        logs.kv("ball detection", "on" if self.use_ball else "off (pose only)")
-        logs.kv("team grouping", "by colour, ranked within each frame"
-                                 if self.team_grouping == "relative"
-                                 else "by colour, each crop on its own")
+        if self.position_needs_detector:
+            logs.kv("if it finds nobody", "appearance alone names the "
+                                          "player (position is at chance)")
+        weights = [(self.weight_motion, "movement"),
+                   (self.weight_upright, "standing up")]
+        if self.thrower_model:
+            logs.kv("thrower picked by", "the goalball detector's own "
+                                         "'throwing_player' class")
+            logs.kv("when it finds nobody", "  ".join(f"{name} {w:.0%}"
+                                                      for w, name in weights if w))
+        else:
+            logs.kv("thrower picked by", "  ".join(f"{name} {w:.0%}"
+                                                   for w, name in weights if w))
         if self.team_source == "position":
             logs.kv("team in the answer", "from the named player's own team "
                                           "(no separate team step)")
@@ -121,7 +144,6 @@ class RunTotals:
 
     predicted: int = 0
     unresolved: int = 0
-    ball_seen: int = 0
     by_team: dict = field(default_factory=dict)
     by_half: dict = field(default_factory=dict)
     confidences: list = field(default_factory=list)
@@ -134,7 +156,7 @@ class Predictor:
     """Holds the models and reference data; call `predict` once per throw."""
 
     def __init__(self, cap, video_info, court, half_plan, player_config,
-                 gallery_crops, settings: Settings):
+                 gallery_crops, settings: Settings, crops_by_half=None):
         self.cap = cap
         self.video = video_info
         self.court = court
@@ -154,8 +176,14 @@ class Predictor:
         teams.check_prototypes(gallery_crops, player_config, self.kit_prototypes)
 
         self.embedder = reid.make(settings.appearance_model)
+        # One bank per half where the gallery has images for it, so a throw is
+        # always compared against how the players looked in that half.
+        self.banks = (reid.banks_by_half(self.embedder, crops_by_half,
+                                         flip_augment=settings.flip_augment)
+                      if crops_by_half else {})
         self.reference_vectors, self.reference_labels = reid.reference_bank(
             self.embedder, gallery_crops, flip_augment=settings.flip_augment)
+        self.projection = self._learn_projection()
 
         # Home zones, resolved once per half rather than once per throw.
         self.zones_by_half = {
@@ -169,12 +197,43 @@ class Predictor:
         self.have_zones = all(bool(z) for z in self.zones_by_half.values())
 
         self.proc_h = video_info.proc_height(settings.processing_width)
-        self.frame_diagonal = float(np.hypot(settings.processing_width, self.proc_h))
-        self.court_centre_px = (
-            self.court.centre_norm[0] * settings.processing_width,
-            self.court.centre_norm[1] * self.proc_h,
-        )
         self.totals = RunTotals()
+
+    def _learn_projection(self):
+        """
+        Work out which directions of the embedding separate these players.
+
+        Fitted across every half at once, because the answer is about who the
+        players are, not where they were standing.
+        """
+        s = self.settings
+        if not s.sharpen_appearance or s.weight_position >= 1.0:
+            return None
+        if self.banks:
+            vectors = np.concatenate([v for v, _ in self.banks.values()])
+            labels = np.concatenate([l for _, l in self.banks.values()])
+        else:
+            vectors, labels = self.reference_vectors, self.reference_labels
+
+        before = reid.separation(vectors, labels)
+        projection = reid.fit_discriminant(vectors, labels, s.appearance_dims)
+        if projection is None:
+            logs.warn("the gallery is too thin to learn what separates the "
+                      "players, so appearance stays unsharpened",
+                      "give every player at least two reference images")
+            return None
+
+        after = reid.separation(reid.project(vectors, projection), labels)
+        logs.ok(f"learned {projection.shape[1]} direction(s) that tell these "
+                f"players apart")
+        logs.kv("how distinct they look", f"{before:.2f} before, {after:.2f} "
+                                          f"after  (above 1 is usable)")
+        if after < 1.0:
+            logs.warn("even after sharpening, two photos of one player differ "
+                      "more than two players do",
+                      "appearance will contribute little - consider "
+                      "--position-weight 1.0, or better reference images")
+        return projection
 
     # ------------------------------------------------------------------
     # One throw
@@ -194,14 +253,6 @@ class Predictor:
             "csv_team_hint": throw.csv_team_hint,
         }
 
-        # -- where did the ball come from? (from the video, never the CSV) --
-        ball_point = None
-        if s.use_ball:
-            ball_point = detect.ball_release_point(
-                self.cap, throw, self.court, s.ball_model,
-                s.processing_width, s.window_fraction)
-        base["ball_seen"] = ball_point is not None
-
         # -- look at several frames across the start of the throw ----------
         start, end = throw.window(s.window_fraction)
         observed = []
@@ -209,14 +260,16 @@ class Predictor:
             frame = read_frame(self.cap, int(index), s.processing_width)
             if frame is None:
                 continue
+            # straight after read_frame the capture sits at index + 1, so the
+            # motion read costs no extra seek
+            motion = (detect.motion_between(self.cap, frame,
+                                            s.processing_width, s.motion_gap)
+                      if s.weight_motion else None)
             found = detect.people(frame, self.court, s.pose_model)
-            if s.team_grouping == "relative":
-                teams.group_relatively(found, self.kit_prototypes,
-                                       self.team_sizes)
-            else:
-                for person in found:
-                    person["team"], person["team_lean"] = teams.team_of_crop(
-                        person["crop"], self.kit_prototypes)
+            for person in found:
+                person["motion"] = detect.motion_in_box(motion, person["box"])
+            teams.group_relatively(found, self.kit_prototypes,
+                                   self.team_sizes)
             if found:
                 observed.append((int(index), found))
 
@@ -234,23 +287,47 @@ class Predictor:
         base["attacking_team"] = attacker_team
 
         # -- pick the thrower out of the attacking team, frame by frame ----
-        thrower_crops, thrower_positions = [], []
-        for _, found in observed:
-            attackers = [p for p in found if p.get("team") == attacker_team]
-            if not attackers:
+        # Two independent opinions per frame, kept apart on purpose. Mixing
+        # them is the trap: if the detector names the thrower in two frames
+        # and the motion rule guesses someone else in the other three, the
+        # median of all five positions lands between two players and means
+        # nothing. So the detector's frames win outright whenever it has any.
+        named_crops, named_positions = [], []
+        guessed_crops, guessed_positions = [], []
+        for index, found in observed:
+            if s.thrower_model:
+                frame = read_frame(self.cap, index, s.processing_width)
+                named = (detect.throwing_players(
+                    frame, self.court, s.thrower_model, s.thrower_confidence)
+                    if frame is not None else [])
+                if named:
+                    best = max(named, key=lambda p: p["confidence"])
+                    named_crops.append(best["crop"])
+                    named_positions.append(best["feet_norm"])
+                    continue
+            candidates = found
+            if not candidates:
                 continue
-            for person in attackers:
-                person["cost"] = self._localisation_cost(person, ball_point)
-            best = min(attackers, key=lambda p: p["cost"])
-            thrower_crops.append(best["crop"])
-            thrower_positions.append(best["feet_norm"])
+            costs = self._localisation_costs(candidates)
+            best = candidates[int(np.argmin(costs))]
+            guessed_crops.append(best["crop"])
+            guessed_positions.append(best["feet_norm"])
+
+        if named_crops:
+            thrower_crops, thrower_positions = named_crops, named_positions
+            located_by = "the goalball detector"
+        else:
+            thrower_crops, thrower_positions = guessed_crops, guessed_positions
+            located_by = "movement and posture"
+        base["frames_from_detector"] = len(named_crops)
+        base["located_by"] = located_by
 
         if not thrower_crops:
             return self._unresolved(
-                base, f"no {attacker_team} player was detected in this window")
+                base, "no player could be picked out in this window")
 
         # -- where was the throw released from? ----------------------------
-        release, release_from = self._release_position(throw, thrower_positions)
+        release, release_from = self._release_position(thrower_positions)
         base["release_position"] = ([round(release[0], 4), round(release[1], 4)]
                                     if release else None)
         base["release_position_from"] = release_from
@@ -284,8 +361,23 @@ class Predictor:
             return self._unresolved(
                 base, f"team '{attacker_team}' is not in the gallery roster")
 
-        appearance = self._appearance_scores(thrower_crops, candidates)
-        scores, how = self._identity_scores(candidates, appearance, zones, release)
+        # When the goalball detector found nobody, the crop came from movement
+        # and posture, which is not reliably the thrower. Where that player was
+        # standing therefore says nothing about who threw - measured on labelled
+        # throws it lands on chance (34.6% against 33.3%). Blending a signal we
+        # know is noise only drags the answer around, so fall back to the
+        # attacking team and let appearance alone name the player.
+        weight = s.weight_position
+        if s.position_needs_detector and not named_crops:
+            team_only = sorted(self.players_by_team.get(attacker_team, []))
+            if team_only:
+                candidates = team_only
+                base["team_from"] = "posture"
+                weight = 0.0
+
+        appearance = self._appearance_scores(thrower_crops, candidates, half)
+        scores, how = self._identity_scores(candidates, appearance, zones,
+                                            release, weight)
         chosen = int(max(scores, key=scores.get))
 
         # -- confidence -----------------------------------------------------
@@ -318,51 +410,72 @@ class Predictor:
     # Pieces
     # ------------------------------------------------------------------
 
-    def _localisation_cost(self, person, ball_point) -> float:
+    @staticmethod
+    def _spread(values) -> np.ndarray:
         """
-        Lower is more likely to be the thrower. Three costs, all scaled to the
-        frame diagonal so they are comparable and resolution-independent.
+        Scale a list to 0..1 against the others in the same frame.
+
+        Everything is judged relatively, never against a fixed threshold. How
+        much a player's pixels change depends on the camera, the compression
+        and how near they are; which of the players on court changed MOST does
+        not. The same goes for how flat a detection box is. When every
+        candidate ties, nobody is favoured.
+        """
+        array = np.asarray(values, dtype=float)
+        low, high = array.min(), array.max()
+        if high - low < 1e-9:
+            return np.full(len(array), 0.5)
+        return (array - low) / (high - low)
+
+    def _localisation_costs(self, candidates: list) -> np.ndarray:
+        """
+        Lower is more likely to be the thrower, one score per candidate.
+
+        The thrower moves and is on their feet; the defenders are already down
+        and the thrower's own team-mates are standing still. Those two signals
+        do nearly all the work - see docs/RESULTS.md for what each contributes.
         """
         s = self.settings
-        x, y = person["feet"]
-        if ball_point is None:
-            ball_cost = 0.5             # unknown: neither helps nor hurts anyone
-        else:
-            ball_cost = min(np.hypot(x - ball_point[0], y - ball_point[1])
-                            / self.frame_diagonal, 1.0)
-        forward_cost = min(np.hypot(x - self.court_centre_px[0],
-                                    y - self.court_centre_px[1])
-                           / self.frame_diagonal, 1.0)
-        pose_cost = 1.0 - person["throw_pose"]
-        return (s.weight_ball * ball_cost
-                + s.weight_forward * forward_cost
-                + s.weight_pose * pose_cost)
+        moving = self._spread([c.get("motion", 0.0) for c in candidates])
+        # a low box width/height means upright, which is what we want
+        upright = 1.0 - self._spread([c["flatness"] for c in candidates])
+        return (s.weight_motion * (1.0 - moving)
+                + s.weight_upright * (1.0 - upright))
 
-    def _release_position(self, throw, thrower_positions) -> tuple:
+    def _release_position(self, thrower_positions) -> tuple:
         """The point used to name the thrower, in normalised frame coordinates."""
-        if self.settings.release_source == "csv":
-            point = throw.release_point()
-            if point:
-                return ((point[0] / self.video.width, point[1] / self.video.height),
-                        "csv ball release point")
         if not thrower_positions:
             return None, "unavailable"
         array = np.asarray(thrower_positions, dtype=float)
         return ((float(np.median(array[:, 0])), float(np.median(array[:, 1]))),
                 "video-localised thrower")
 
-    def _appearance_scores(self, crops, candidates) -> dict:
+    def _appearance_scores(self, crops, candidates, half) -> dict:
+        """
+        Compare the thrower's crop against this half's references.
+
+        Falls back to every reference the gallery has if that half was never
+        tagged - worse than like-for-like, better than nothing.
+        """
         vectors = reid.embed(self.embedder, crops,
                              flip_augment=self.settings.flip_augment)
         query = vectors.mean(axis=0)
         query /= (np.linalg.norm(query) + 1e-8)
+        bank = self.banks.get(int(half))
+        reference, labels = bank if bank else (self.reference_vectors,
+                                               self.reference_labels)
+        # The query and the references must go through the same projection.
+        reference = reid.project(reference, self.projection)
+        query = reid.project(query, self.projection)
         return reid.similarity_to_players(
-            query, self.reference_vectors, self.reference_labels, candidates,
+            query, reference, labels, candidates,
             top_k=self.settings.appearance_top_k)
 
-    def _identity_scores(self, candidates, appearance, zones, release) -> tuple:
+    def _identity_scores(self, candidates, appearance, zones, release,
+                         weight=None) -> tuple:
         """Blend the position match with the appearance match."""
         s = self.settings
+        weight = s.weight_position if weight is None else float(weight)
         usable_zones = release is not None and all(p in zones for p in candidates)
         if not usable_zones:
             return dict(appearance), "appearance only (no home zones available)"
@@ -375,14 +488,14 @@ class Predictor:
             distance_sq = (release[0] - zx) ** 2 + (release[1] - zy) ** 2
             position = float(np.exp(-0.5 * distance_sq / (s.position_spread ** 2)))
             appearance_norm = (appearance[pid] - lo) / spread
-            scores[pid] = (s.weight_position * position
-                           + (1.0 - s.weight_position) * appearance_norm)
-        if s.weight_position >= 1.0:
+            scores[pid] = (weight * position
+                           + (1.0 - weight) * appearance_norm)
+        if weight >= 1.0:
             how = "court position"
-        elif s.weight_position <= 0.0:
-            how = "appearance"
+        elif weight <= 0.0:
+            how = "appearance alone (the detector did not find the thrower)"
         else:
-            how = f"court position ({s.weight_position:.0%}) plus appearance"
+            how = f"court position ({weight:.0%}) plus appearance"
         return scores, how
 
     def _margin(self, values) -> float:
@@ -409,7 +522,6 @@ class Predictor:
     def _count(self, record) -> None:
         t = self.totals
         t.predicted += 1
-        t.ball_seen += int(bool(record.get("ball_seen")))
         t.confidences.append(record["confidence"])
         team = record.get("thrower_team") or "?"
         t.by_team[team] = t.by_team.get(team, 0) + 1
@@ -433,7 +545,6 @@ def log_one(record: dict, index: int, total: int) -> None:
         return
     who = f"{record['thrower_name']} ({record['thrower_team']})".ljust(16)
     notes = [f"{record['frames_voted']} frames agreed"]
-    notes.append("ball seen" if record.get("ball_seen") else "ball not seen")
     if record.get("end_agrees_with_half") is False:
         notes.append(logs.yellow("but the ball came from the other team's end"))
     logs.info(f"{tag} {when}  {who} {logs.bar(record['confidence'])} "
@@ -464,7 +575,6 @@ def log_summary(totals: RunTotals, output_path: str) -> None:
     if len(totals.by_half) > 1:
         logs.kv("throws per half", "   ".join(f"half {h}: {n}" for h, n in
                                               sorted(totals.by_half.items())))
-    logs.kv("ball found in video", f"{totals.ball_seen} of {totals.predicted} throws")
     if totals.end_checked:
         agree = totals.end_agreements
         logs.kv("posture vs the end",

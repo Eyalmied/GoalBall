@@ -147,7 +147,6 @@ def check_files(cfg) -> bool:
         ("gallery", pathlib.Path(cfg.gallery_dir) / "manifest.json", False),
         ("court", cfg.court_file, False),
         ("pose model", cfg.pose_model, False),
-        ("ball model", cfg.ball_model, False),
         ("labels", cfg.labels, False),
     ]:
         if not path:
@@ -201,7 +200,7 @@ def main() -> None:
         logs.blank()
         logs.next_steps([
             "run the whole pipeline:  python scripts/run_pipeline.py "
-            "--config config/mygame.json --half 1",
+            "--config config/mygame.json",
             "or read docs/USAGE.md",
         ])
         return

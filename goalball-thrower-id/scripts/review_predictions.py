@@ -83,9 +83,8 @@ def compose(frame, throw_id, prediction, label, crops, player_config,
                         f"half {prediction.get('half', '?')}   {verdict}",
                 (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, colour, 2)
     confidence = prediction.get("confidence", "?")
-    ball = "ball seen" if prediction.get("ball_seen") else "ball not seen"
     cv2.putText(banner, f"chose {prediction.get('thrower_name')} "
-                        f"(confidence {confidence}, {ball}, by "
+                        f"(confidence {confidence}, by "
                         f"{prediction.get('decided_by', '?')})    "
                         f"you said {(label or {}).get('thrower_name', '-')}",
                 (12, 56), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)

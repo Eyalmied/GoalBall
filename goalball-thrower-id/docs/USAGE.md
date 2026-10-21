@@ -1,5 +1,9 @@
 # Usage — start to finish
 
+> Looking for just the commands, in order, with what to check after each?
+> That is **[RUNBOOK.md](RUNBOOK.md)**. This page covers the same ground more
+> slowly, with the reasoning behind each step.
+
 Everything you need to go from a match video to a scored list of throwers. No
 knowledge of the internals is assumed; follow the steps in order.
 
@@ -79,13 +83,21 @@ Paths are relative to this repository folder. Full key list:
 scrubbing to the restart after the interval; a few seconds either way is fine,
 as long as it falls inside the break.
 
+It is the **single source of truth** for how the match is split. Every step —
+tagging, the court check, labelling, prediction — reads it from here, so they
+cannot disagree, and you never pass it on the command line.
+
+A match is assumed to have **two halves**, so this field is required. If you
+leave it out the run stops and tells you to add it, rather than quietly
+treating the whole video as one half. If your video genuinely *is* a single
+half, pass `--half 1` (or `--half 2`) instead and you can omit it.
+
 ---
 
 ## The short version
 
 ```bash
-python scripts/run_pipeline.py --config config/mygame.json \
-       --half auto --half2-start 22:00
+python scripts/run_pipeline.py --config config/mygame.json
 ```
 
 That runs every step below, skipping any that is already done. The rest of this
@@ -100,39 +112,62 @@ asking of you.
 python scripts/build_gallery.py --config config/mygame.json --half 1
 ```
 
-You will tag all six players in five different frames. Each tag records what
-that player looks like **and where they stand on court** — their home zone.
-The home zone is the part that matters: identical uniforms and blackout
-eyeshades defeat every appearance model, so position is what separates two
-teammates.
+You give every player five reference images **in each half** — 60 tags in all.
+Each tag records what that player looks like **and where they stand on
+court** — their home zone. The home zone
+is the part that matters: identical uniforms and blackout eyeshades defeat
+every appearance model, so position is what separates two teammates.
 
-**Per player: drag a box around them, then press their number.** When all six
-are boxed, press `c`. Repeat for five rounds.
+**Drag a box around a player, then press their number.** That's one image for
+them. Tag whoever else is clear in the same frame, press `n` for another frame,
+and carry on until everyone has five.
 
 | key | does |
 |---|---|
 | drag mouse | draw a box around one player |
-| `1`–`6` | tag the box you just drew as that player |
-| `u` | undo the last tag in this frame |
-| `c` / Enter | save this round — only works once everyone is tagged |
-| `n` | skip this frame, get another one |
-| `q` | stop (rounds already saved are kept) |
+| `1`–`6` | file the box you just drew under that player |
+| `n` | another frame from this half |
+| `b` | go back a frame |
+| **`h`** | **switch half** — the other half's view of the same players |
+| `u` | undo the last tag |
+| `q` | stop (everything tagged so far is kept) |
 
-Three things worth getting right:
+Progress is counted **per player**, shown along the top: `1:3/5  2:5/5  3:0/5 …`.
+Nobody has to come from the same frames as anybody else.
+
+### Use both halves
+
+Press `h` to flip between a first-half frame and a second-half one, as often as
+you like, for any player. A player who is blocked or facing away for the whole
+first half is often perfectly clear in the second — tag them there instead of
+settling for a bad crop.
+
+This is safe because every position is stored **with the half it came from**,
+and medians are taken per half, never across them. A player tagged in both ends
+up with a *measured* home zone for each, which is better than measuring one and
+mirroring it into the other. The run tells you which you got:
+
+```
+    half 1   CHN at the bottom,  ISR at the top   (6/6 zones measured here)
+    half 2   CHN at the top,  ISR at the bottom   (4/6 zones measured here)
+```
+
+`h` only works if the pipeline knows where half 2 starts — that comes from
+`half2_start` in your config. Without it you get one half and a warning.
+
+`--half` just says which half to start in and which one the gallery reports as
+its reference.
+
+Two more things that matter:
 
 - **Include the feet.** The bottom edge of your box is the position that gets
   recorded. A box cut off at the knees puts the player metres up the court.
-- **Skip messy frames.** If players overlap, press `n`. Only complete rounds
-  are saved, so everyone ends up with the same number of good references.
-- **`--half` matters.** Tag inside one half and say which one. With
-  `half2_start` in your config the builder only offers you frames from that
-  half, so you cannot mix them by accident. See [HALVES.md](HALVES.md).
+- **Skip bad frames.** If a player is a blur or behind someone else, press `n`
+  or `h` and find a better frame. Five good crops beat five rushed ones.
 
 When it finishes it reads the gallery back and prints which end each team is
-on. **Check that against the video.** If it is swapped, you tagged the other
-half — re-run with the other `--half`.
-
----
+on, per half. **Check that against the video.** If it is swapped, start in the
+other half (`--half 2`).
 
 ## Step 2 — Mark the court *(once per camera angle, opens a window)*
 
@@ -164,8 +199,7 @@ referees back in and stretches the half-time flip.
 ## Step 3 — Predict *(the actual work)*
 
 ```bash
-python scripts/predict_throwers.py --config config/mygame.json \
-       --half auto --half2-start 22:00
+python scripts/predict_throwers.py --config config/mygame.json
 ```
 
 One line per throw:
@@ -186,20 +220,10 @@ Worth knowing:
   `--resume` to carry on where you left off.
 - **`--limit 5`** does a quick five-throw check before committing to the lot.
 
-### The two flags that change the answer
+### The flags that change the answer
 
-```bash
-# default: use the upstream detector's ball release point as the thrower's
-# POSITION only. ~74% correct thrower.
---release-source csv
-
-# strictly video-only: nothing from the CSV but the timestamps. ~50%.
---release-source thrower
-```
-
-The difference is only where the thrower's position comes from; everything else
-is identical. Use `csv` unless you specifically need a video-only result — see
-[RESULTS.md](RESULTS.md) for why the gap is so large.
+Nothing is read from the CSV but the throw timestamps. Who threw, and where
+they were standing, both come from the video.
 
 ```bash
 --appearance osnet      # default, stronger
@@ -229,7 +253,7 @@ Everything else has a measured-best default. `python scripts/predict_throwers.py
 To get a number you can trust, label some throws first:
 
 ```bash
-python scripts/label_throwers.py --config config/mygame.json --half auto
+python scripts/label_throwers.py --config config/mygame.json
 ```
 
 Each throw loops with the ball's release point marked and the gallery beside
@@ -254,19 +278,19 @@ python scripts/evaluate.py --config config/mygame.json --holdout 0.3
 
 ```
 HELD OUT - this is the number that counts
-    labelled throws        20
-    of those, predicted    20 (100.0%)
+    labelled throws        52
+    of those, predicted    52 (100.0%)
 
-    CORRECT THROWER        17/20 = 85.0%
-    correct team           20/20 = 100.0%
-    right player, given    17/20 = 85.0%
+    CORRECT THROWER        43/52 = 82.7%
+    correct team           52/52 = 100.0%
+    right player, given    43/52 = 82.7%
       the right team
     guessing would give    33.3%
 ```
 
-(That is a real held-out block from the reference match. Note the sample size:
-20 throws means every throw is worth 5 percentage points, so a held-out figure
-swings a lot. The all-throws number for the same run is 74.1%.)
+(A real held-out block from the reference match. The all-throws number for the
+same run is 72.4%, and the tune block is 68.2% — held-out sets of 52 throws
+swing by ten points or more either way, so treat a single split with caution.)
 
 `--holdout 0.3` splits the throws the same way every run. Tune against the
 "tune" block; only read the "held out" block at the end. Quoting a number you
@@ -313,8 +337,8 @@ setup files.
 
 | | |
 |---|---|
-| Correct team | around **97%** |
-| Correct thrower | around **74%** with `--release-source csv`, around **50%** video-only |
+| Correct team | around **99%** |
+| Correct thrower | around **69%** |
 | Confidence | means something: the calls at 0.7 and above are mostly right. `evaluate.py` prints accuracy split by confidence so you can check that on your own footage |
 | Posture vs the end | 90%+ agreement between the posture team and the end the ball came from. Lower means either the half is wrong or one team is too far from the camera for the kit colours to separate — the answer's team comes from position, so it survives, but it is worth knowing |
 
@@ -336,7 +360,7 @@ effort — see [RESULTS.md](RESULTS.md) before trying to push past it.
 | One half much worse than the other | `half2_start` is wrong, or `--half` does not match the footage. See [HALVES.md](HALVES.md) |
 | The wrong **teammate**, often | the known hard case: two players whose home zones overlap. More gallery images will not fix it — [RESULTS.md](RESULTS.md) explains why |
 | Some throws get **no call** | nobody was detected in that window (players occluded). Those come out with no thrower rather than a guess; the run summary counts them |
-| `posture vs the end` below 75% | either `--half` is wrong for this footage, or one team is too far from the camera for the kit colours to separate. The answer's team comes from court position and survives that, but a video-only run (`--release-source thrower`) would not |
+| `posture vs the end` below 75% | either `--half` is wrong for this footage, or one team is too far from the camera for the kit colours to separate. The answer's team comes from court position and survives that |
 
 Add `--verbose` to any script to see the internals, including the framework
 output that is normally hidden.

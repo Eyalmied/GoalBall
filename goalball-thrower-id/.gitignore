@@ -11,7 +11,8 @@
 *.pth
 *.onnx
 
-# Per-match outputs.
+# Per-match outputs and anything produced by a run. None of this is part of
+# the system: it is one person's working data for one game.
 gallery*/
 court*.json
 predictions*.json
@@ -21,8 +22,12 @@ thrower_labels.csv
 review*/
 *.json.tmp
 *.csv.tmp
+*.bak
+*.bak.*
 
-# Keep the config templates, ignore personal ones.
+# Per-match config files. The two examples below are tracked deliberately;
+# any other config/*.json is somebody's own game and stays on their machine.
+config/*.json
 !config/example.json
 !config/paralympics24_isr_chn.json
 

@@ -32,10 +32,9 @@ measured on its own.
 
 | | Question | What answers it | Measured |
 |---|---|---|---|
-| **Localise** | Which person on court is throwing? | nearest where the ball came from, most stepped-in, most throw-like pose | — |
-| **Identify** | Who is that player? | their **court position** matched to home zones recorded at tagging time | **~76–81%** |
-| **Team** | Which team is that? | it falls out of the name — the two teams stand at opposite ends | **~98%** |
-| *(also)* | Which team is attacking? | **posture** — defenders lie flat to block, attackers stand | **89%** |
+| **Localise** | Which person on court is throwing? | a goalball-trained detector's `throwing_player` class; failing that, who is **moving** and who is **upright** | — |
+| **Identify** | Who is that player? | their **court position** matched to home zones recorded at tagging time, with appearance as a tie-break | **69%** |
+| **Team** | Which team is that? | it falls out of the name — the two teams stand at opposite ends | **99.4%** |
 
 Correct thrower = right team **and** right player, so the end-to-end figure is
 the product. Measuring the pieces separately is what let each bottleneck be
@@ -55,10 +54,10 @@ the pipeline actually runs them.
 ```
 ONCE PER MATCH  (interactive, ~6 minutes)
   ┌──────────────────────────────────────────────────────────────┐
-  │  Tag all 6 players in K complete rounds, inside ONE half     │
+  │  Tag all 6 players, K images each, from EITHER half (h flips) │
   │    -> reference images per player                            │
-  │    -> HOME ZONE per player (median foot point)               │
-  │    -> the half it was tagged in, stored with the gallery      │
+  │    -> HOME ZONE per player PER HALF (median foot point)      │
+  │    -> the half each sample came from, stored with it          │
   │  Click the 4 court corners                                    │
   │    -> the fence, and the flat court used to flip ends         │
   └──────────────────────────────────────────────────────────────┘
@@ -69,14 +68,14 @@ PER THROW  (driven by the timestamp alone)
   │ 2.  sample N frames across the start of the throw window      │
   │ 3.  detect people + skeletons (one YOLO-pose pass)            │
   │ 4.  drop anyone whose FEET are outside the court              │
-  │ 5.  group into two teams by kit colour (ranked in-frame)      │
-  │ 6.  POSTURE: the more upright team is attacking                │
-  │ 7.  find where the ball was released                          │
-  │ 8.  LOCALISE the thrower among the attackers                   │
-  │ 9.  IDENTIFY: release position -> nearest home zone,          │
-  │              over every player; the winner's team is the team  │
-  │ 10. vote across the frames                                     │
-  │ 11. emit player + team + confidence + why                      │
+  │ 5.  LOCALISE: ask the goalball detector which player is        │
+  │     throwing; if it finds nobody, fall back to who is moving   │
+  │     and who is upright. Never mix the two in one throw.        │
+  │ 6.  take that player's foot point, median across frames        │
+  │ 7.  IDENTIFY: nearest home zone for THIS half, over every      │
+  │     player, with appearance as a 25% tie-break                 │
+  │ 8.  the winner's team is the team                              │
+  │ 9.  emit player + team + confidence + why                      │
   └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -86,10 +85,13 @@ PER THROW  (driven by the timestamp alone)
 
 ### 4.1 Reference gallery and home zones — `goalball/gallery.py`
 
-Tagging happens in **complete rounds**: a frame is saved only when every player
-has been boxed in it and confirmed. Partial frames are discarded whole, so
-every player ends with the same number of references and the same number of
-position samples — nobody is over- or under-represented.
+Tagging is counted **per player**, not per frame: box whoever is clear in front
+of you, move on, and carry on until everyone has the same number of images.
+They do not have to come from the same frames, which matters because a player
+can be occluded or facing away for a long stretch.
+
+One key (`h`) flips between a first-half frame and a second-half one, for any
+player, as often as wanted.
 
 Each box gives two things. The pixels feed the appearance model. The
 bottom-centre of the box — the player's feet, as a fraction of the frame — is
@@ -99,11 +101,30 @@ cannot drag it away.
 ```json
 {
   "player_config": {"1": {"name": "...", "team": "ISR"}, "...": {}},
-  "crops":       {"1": ["player_1_0.jpg", "..."]},
-  "home_zones":  {"1": [0.34, 0.39]},
+  "crops_by_half": {
+      "1": {"1": ["player_1_h1_0.jpg", "..."]},
+      "2": {"1": ["player_1_h2_0.jpg", "..."]}
+  },
+  "home_zones_by_half": {
+      "1": {"1": [0.34, 0.39], "...": []},
+      "2": {"4": [0.66, 0.41], "...": []}
+  },
+  "home_zones":   {"1": [0.34, 0.39]},
   "gallery_half": 1
 }
 ```
+
+Every position sample carries the half it was measured in, and medians are
+taken **per half, never across them**. That is not a nicety: the same player
+stands at opposite ends in the two halves, so averaging a mixed set silently
+moves their zone to the wrong end once the other half's samples are the
+majority, with nothing to flag it.
+
+A player tagged in both halves therefore has a *measured* zone for each, and
+nothing is mirrored for them. The reference **images** are split the same way
+and the matcher builds one bank per half, because a player at the far end of
+the court does not look like the same player near the camera. `home_zones` and
+`crops` repeat the per-half data flat so older readers still work.
 
 Recording the home zone *at tagging time* is the move that makes
 position-based identity possible at all. Naming a position slot otherwise
@@ -202,6 +223,22 @@ split three and three, which cancels a bias that moves them all the same way
 (22% → 40%). It is still the weakest signal in the pipeline, which is why the
 answer's team no longer depends on it (§4.8).
 
+### 4.5b Finding the thrower — `goalball/detect.py`
+
+The project's own fine-tuned detector has a class `throwing_player`. Asking it
+directly beats every rule we can write by hand: **68.5%** correct thrower
+against 46.4% for movement + uprightness, and 32.6% for the upstream CSV
+release point. With the fallback gate the pipeline reaches **72.4%**.
+
+It finds a thrower in about 83% of throws. The rest fall back to the movement
+rule — and the two are never mixed within one throw. The detector typically
+fires on only one or two of the five sampled frames, so averaging its answer
+with the fallback's guess about a different person puts the result between two
+players; keeping them apart is worth 16 points.
+
+The detector is optional. Without it the pipeline runs on movement and
+uprightness alone and says so.
+
 ### 4.6 Where the ball came from — `goalball/detect.py`
 
 The generic COCO "sports ball" class over a few early frames, court-gated, most
@@ -210,8 +247,11 @@ was and no better. When the ball is never confidently seen the throw falls back
 to posture and pose rather than trusting a bad point — a deliberate choice to
 degrade rather than guess.
 
-This is the weakest link in the whole system and the honest reason for the
-video-only accuracy figure; see [RESULTS.md](RESULTS.md) §3.
+Measured, this is a dead end: the best of five ways of choosing "the ball at
+release" scores 34.9%, and picking *perfectly* among every ball found still
+gives only 30.7%. At release the ball is small, blurred and behind the
+thrower's body; it becomes detectable only once it is mid-court. Ball
+detection is **off by default**. See [RESULTS.md](RESULTS.md) §2.
 
 ### 4.7 Localising the thrower — `goalball/predict.py`
 
@@ -257,9 +297,9 @@ while an unrestricted match simply never puts an opponent at the wrong end:
 
 | | Correct thrower | Correct team |
 |---|---|---|
-| restrict to the posture team, then name | 71.8% | 97.6% |
-| **name against everyone** (default) | **74.1%** | **97.6%** |
-| restrict to a *perfect* team, then name | 72.9% | 100% |
+| restrict to the posture team, then name | worse | |
+| **name against everyone** (default) | **better** | |
+| restrict to a *perfect* team, then name | still worse than not restricting | |
 
 Across halves the difference is much larger — 40% against 79% for the team in
 the second half — because narrowing depends on the kit grouping, and that is
@@ -267,13 +307,10 @@ what breaks (§4.5). `--team-source posture` restores the older behaviour, and
 is used automatically when the gallery has no home zones, since appearance
 alone cannot cope with six candidates.
 
-The release position comes from one of two places, chosen with
-`--release-source`:
-
-- **`csv`** (default) — the upstream detector's ball release point, used for
-  the thrower's *position only*, never for the team. ~71% correct thrower.
-- **`thrower`** — the video-localised thrower's median foot position. Strictly
-  video-only. ~50%.
+The release position is the video-localised thrower's median foot position.
+The upstream detector's CSV release point was tried as the source and scored
+far worse — it is in a different coordinate system from the video — so it is
+no longer used for prediction, only to seed the labelling tool.
 
 ### 4.9 Appearance — `goalball/reid.py`
 
@@ -282,6 +319,30 @@ to install). Two standard practices: horizontal-flip augmentation, since
 players face every direction across a throw; and multi-shot matching, keeping
 every reference image as its own labelled point rather than averaging a player
 into one prototype, so front, back and prone appearances all survive.
+
+**And one that is not standard, but is necessary here.** The raw embedding
+puts two photos of the same player *further apart* than two different
+team-mates — 0.864 against 0.323. These models are trained for street
+re-identification, where clothing identifies a person; both teams wear the
+same kit, so the feature they lean on hardest is uninformative, and the
+loudest direction that remains simply measures how far the player stood from
+the camera.
+
+So the gallery's own labels are used to learn which directions actually
+separate *these* players — maximising the spread between players relative to
+the spread within each one — and the rest are discarded. Three directions out
+of 512. That turns the ratio above into 1.139 against 0.426, and lifts
+"which of the three team-mates" from 52% to 61%.
+
+It costs nothing extra: the labels come from tagging the gallery, which
+happens anyway. It is refitted per match, so nothing transfers between games.
+Turn it off with `--no-sharpen-appearance`.
+
+It does **not** improve the end-to-end answer on throws the detector located:
+there, court position decides and a sharper appearance signal changes nothing
+measurable. What it does improve is the one place appearance actually decides
+the answer — the throws the detector missed, where the bucket goes from 42.3%
+to 50.0%. See the "When the detector finds nobody" section of [RESULTS.md](RESULTS.md).
 
 ### 4.10 Voting
 
@@ -317,7 +378,9 @@ way to know the score means anything on your footage.
 | Single-frame answers unstable | blur, occlusion, players crossing | vote across frames | robust |
 | Second-half calls inverted | teams change ends; home zones do not follow | **explicit half** + flip on the flat court | correct in both halves |
 | Kit matching inverts in the other half | far-end crops wash out toward the gallery's kit | rank the crops **within the frame**, and take the team from **position** instead | 22% → 40% → **79%** in half 2 |
-| Narrowing to one team loses answers | a wrong restriction removes the right player | name against **every** home zone | 71.8% → **74.1%** |
+| Narrowing to one team loses answers | a wrong restriction removes the right player | name against **every** home zone | measurably better |
+| Ball proximity picked the blocker | the ball is detected where it is big and slow, at the defending end | movement + uprightness, then a trained `throwing_player` detector | 32.6% → **72.4%** |
+| Positions averaged across frames about different people | the detector fires on some frames, the fallback on others | the detector's frames win outright | +16 points |
 | Mirrored zones landing too far down court | the polygon centre is not the centre of play | turn about the **zones' own** centre | matches the measured second half |
 | Not all calls equally reliable | — | confidence, in three parts | reviewable output |
 

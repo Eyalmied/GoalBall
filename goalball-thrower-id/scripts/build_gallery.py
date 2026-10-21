@@ -9,12 +9,20 @@ identical uniforms and blackout eyeshades defeat every appearance model.
 
     python scripts/build_gallery.py --config config/mygame.json --half 1
 
-WHY --half IS ASKED FOR HERE
-    A home zone is only meaningful together with the half it was measured in,
-    because the teams change ends at half-time. Tag inside ONE half, tell the
-    script which one, and every later run can mirror the zones correctly for
-    the other half. The half you tag in is written into the gallery, so you
-    only state it once.
+TAG FROM EITHER HALF
+    Press `h` during tagging to flip between a frame from the first half and
+    one from the second, as often as you like, for any player. A player who is
+    blocked or facing away for the whole first half is often perfectly clear in
+    the second.
+
+    Every position is stored with the half it came from, so this is safe:
+    medians are taken per half, never across them. A player tagged in both ends
+    up with a MEASURED home zone for each, which beats measuring one and
+    mirroring it into the other.
+
+    --half only says which half to START in, and which one the gallery reports
+    as its reference. Giving --half2-start (or half2_start in the config) is
+    what makes the second half available at all.
 """
 
 from __future__ import annotations
@@ -25,7 +33,7 @@ import pathlib
 import cv2
 import numpy as np
 
-from _common import base_parser, parse_timestamp, resolve
+from _common import base_parser, half_boundary, parse_timestamp, resolve
 from goalball import court as court_module
 from goalball import gallery as gallery_module
 from goalball import halves, logs, video
@@ -93,31 +101,42 @@ def check_roster(roster: dict) -> None:
                   "three' assume the normal 3-a-side line-up")
 
 
-def half_frame_range(info, half: str, half2_start: str) -> tuple:
-    """Restrict tagging to the half being tagged, when we know where it starts."""
+def half_ranges(info, half2_start) -> tuple:
+    """
+    ({half: (low, high)}, boundary_frame) - the frames belonging to each half.
+
+    Without a half-2 start there is only one range, covering the whole video,
+    and it is reported as half 1: nothing tells us where to split it.
+    """
     last = max(1, info.frame_count - 1)
     if not half2_start:
-        return 0, last, None
+        return {1: (0, last)}, None
     from goalball.events import mmss_to_seconds
     boundary = int(round(mmss_to_seconds(half2_start) * info.fps))
     boundary = max(0, min(boundary, last))
-    if str(half) == "1":
-        return 0, boundary, f"before {half2_start}"
-    return boundary, last, f"from {half2_start} onwards"
+    ranges = {}
+    if boundary > 0:
+        ranges[1] = (0, boundary)
+    if boundary < last:
+        ranges[2] = (boundary, last)
+    return ranges, boundary
 
 
 def main() -> None:
     parser = base_parser(__doc__)
     parser.add_argument("--half", default="1", choices=["1", "2"],
-                        help="which half of the match you are tagging in "
-                             "(default: 1). Tag inside ONE half only.")
+                        help="which half to START in, and the one the gallery "
+                             "reports as its reference (default: 1). You can "
+                             "switch halves freely while tagging with h.")
     parser.add_argument("--half2-start", dest="half2_start", default=None,
-                        help="video timestamp where the second half begins, "
-                             "e.g. 24:00. Given this, the script only offers "
-                             "you frames from the half you are tagging.")
+                        help="override the config's half2_start for this run "
+                             "only. Without a half-time from either source the "
+                             "second half cannot be offered and h does nothing.")
     parser.add_argument("--rounds", type=int, default=5,
-                        help="reference images per player (default: 5). More is "
-                             "better, but 5 is plenty for the position signal.")
+                        help="reference images per player PER HALF (default: "
+                             "5, so 10 each across both halves). Each half "
+                             "needs its own: the teams change ends, so a "
+                             "player looks different in the two.")
     parser.add_argument("--roster", default=None,
                         help="JSON file with the players' names and teams "
                              "(defaults to the 'roster' block in --config)")
@@ -145,37 +164,50 @@ def main() -> None:
     info.describe()
     logs.step_done()
 
-    logs.step(3, 4, "Choosing which part of the video to tag in")
-    low, high, why = half_frame_range(info, args.half,
-                                      args.half2_start or cfg.half2_start)
-    if args.from_time:
-        low = max(low, parse_timestamp(args.from_time, info.fps, low))
-    if args.to_time:
-        high = min(high, parse_timestamp(args.to_time, info.fps, high))
-    if high <= low:
+    logs.step(3, 4, "Working out which frames to offer")
+    boundary_text, boundary_source = half_boundary(args, cfg)
+    if boundary_text:
+        logs.kv("ends change at", f"{boundary_text}   (from {boundary_source})")
+    ranges, _boundary = half_ranges(info, boundary_text)
+    clip_low = parse_timestamp(args.from_time, info.fps, 0) if args.from_time else None
+    clip_high = parse_timestamp(args.to_time, info.fps, info.frame_count) \
+        if args.to_time else None
+
+    pools = {}
+    for half, (low, high) in sorted(ranges.items()):
+        if clip_low is not None:
+            low = max(low, clip_low)
+        if clip_high is not None:
+            high = min(high, clip_high)
+        if high <= low:
+            continue
+        pools[half] = [int(v) for v in
+                       np.linspace(low, high, max(args.rounds * 4, 8))]
+        logs.kv(f"half {half}", f"{logs.mmss(info.seconds_of(low))} to "
+                                f"{logs.mmss(info.seconds_of(high))}  "
+                                f"({len(pools[half])} frames on offer)")
+    if not pools:
         logs.fail("the chosen time range is empty",
                   "check --from / --to and --half2-start")
-    logs.kv("tagging half", args.half + (f"  ({why})" if why else ""))
-    logs.kv("frames offered from", f"{logs.mmss(info.seconds_of(low))} to "
-                                   f"{logs.mmss(info.seconds_of(high))}")
-    if not why and not (args.from_time or args.to_time):
-        logs.warn("nothing tells this script where half 2 starts, so frames "
-                  "from the whole video may be offered",
-                  "pass --half2-start MM:SS (or add half2_start to your config) "
-                  "so the home zones all come from one half - mixing halves "
-                  "makes them meaningless")
-    pool = [int(v) for v in np.linspace(low, high, max(args.rounds * 4, 8))]
+    if len(pools) < 2:
+        logs.warn("only one half can be offered, so you cannot press h to "
+                  "switch during tagging",
+                  "add half2_start to your config so every step splits the "
+                  "match the same way")
+    start_half = int(args.half) if int(args.half) in pools else sorted(pools)[0]
+    logs.kv("starting in", f"half {start_half}")
     logs.step_done()
 
     logs.step(4, 4, "Tagging")
-    crops, zones, frame_size, saved = gallery_module.tag_interactive(
-        cap, info, roster, args.rounds, candidate_frames=pool)
+    crops_by_half, samples, frame_size, counts = gallery_module.tag_interactive(
+        cap, info, roster, args.rounds, pools, start_half=start_half)
     cap.release()
     cv2.destroyAllWindows()
     logs.blank()
-    gallery_module.save(cfg.gallery_dir, crops, roster, zones,
-                        gallery_half=int(args.half), frame_size=frame_size)
-    logs.step_done(f"{saved} complete round(s)")
+    gallery_module.save(cfg.gallery_dir, crops_by_half, roster, samples,
+                        gallery_half=start_half, frame_size=frame_size)
+    logs.step_done(f"{sum(counts.values())} reference image(s) across "
+                   f"{len(crops_by_half)} half/halves")
 
     # Read it straight back and show what the home zones imply. A silent
     # gallery is a gallery you cannot trust.
@@ -183,12 +215,18 @@ def main() -> None:
     reloaded_crops, player_config, meta = gallery_module.load(cfg.gallery_dir)
     court = court_module.load(cfg.court_file)
     if meta["has_home_zones"]:
-        plan = halves.build(meta["gallery_half"], str(args.half), None, info.fps)
-        ends = plan.team_ends(player_config, court, int(args.half))
-        for team, side in sorted(ends.items()):
-            logs.kv(f"{team} home end", f"the {side} of the frame in half {args.half}")
-        logs.hint("if those ends are swapped, you tagged in the other half - "
-                  "re-run with the other --half")
+        plan = halves.build(meta["gallery_half"], "auto", boundary_text,
+                            info.fps)
+        for half in sorted(pools):
+            ends = plan.team_ends(player_config, court, half)
+            provenance = plan.zone_provenance(player_config, half)
+            measured = sum(1 for v in provenance.values() if v == "measured")
+            where = ",  ".join(f"{t} at the {side}" for t, side in sorted(ends.items()))
+            logs.kv(f"half {half}", f"{where}   "
+                                    f"({measured}/{len(player_config)} zones "
+                                    f"measured here)")
+        logs.hint("if those ends look swapped against the video, re-run and "
+                  "start in the other half (--half)")
 
     sheet = gallery_module.contact_sheet(reloaded_crops, player_config)
     sheet_path = str(pathlib.Path(cfg.gallery_dir) / "_contact_sheet.jpg")

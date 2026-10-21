@@ -10,7 +10,6 @@
   "predictions": "predictions_mymatch.json",
 
   "pose_model": "yolov8m-pose.pt",
-  "ball_model": "yolov8m.pt",
 
   "half2_start": "22:00",
 

@@ -7,7 +7,7 @@ lives in the source code.
 ```bash
 cp config/example.json config/mygame.json
 # edit it, then:
-python scripts/run_pipeline.py --config config/mygame.json --half 1
+python scripts/run_pipeline.py --config config/mygame.json
 ```
 
 | key | what it is |
@@ -19,8 +19,9 @@ python scripts/run_pipeline.py --config config/mygame.json --half 1
 | `court_file` | where the four court corners are written / read |
 | `labels` | ground-truth CSV, if you label throws to measure accuracy |
 | `predictions` | where the results go |
-| `pose_model` / `ball_model` | YOLO weight files. A bare name like `yolov8m-pose.pt` lets ultralytics download it on first use, which is what both example configs do. These are the **generic COCO** models — for people, skeletons and the ball — not a fine-tuned goalball detector |
-| `half2_start` | video timestamp where the second half begins, e.g. `"22:00"` |
+| `thrower_model` | a goalball-trained detector whose class 0 is `throwing_player`. This is how the thrower is found by default. Defaults to `../Model Weights/best.pt`, the project's own weights. Without it the pipeline falls back to movement and posture |
+| `pose_model` | YOLO weight file used to find the people on court. A bare name like `yolov8m-pose.pt` lets ultralytics download it on first use, which is what both example configs do. This is the **generic COCO** model, not a fine-tuned goalball detector |
+| `half2_start` | **Required.** Video timestamp where the second half begins, e.g. `"22:00"`. A match is assumed to have two halves, and this is the single source of truth for where it splits — tagging, the court check, labelling and prediction all read it from here. Omit it only if the video is a single half, and then pass `--half 1` or `--half 2` |
 | `roster` | the six players: id, name, team. The team labels are what predictions report. |
 
 Relative paths are resolved **against the config file itself**, so a config can

@@ -23,8 +23,10 @@ so it is always valid even if you stop the run.
     "frame_coverage": 1.0
   },
 
-  "decided_by": "court position",
-  "frames_voted": 5,
+  "decided_by": "court position (75%) plus appearance",
+  "located_by": "the goalball detector",
+  "frames_from_detector": 2,
+  "frames_voted": 2,
   "identity_scores":   {"1": 0.21, "2": 0.88, "3": 0.34},
   "appearance_scores": {"1": 0.52, "2": 0.61, "3": 0.55},
 
@@ -82,7 +84,9 @@ python scripts/review_predictions.py --config ... --only-uncertain 0.4
 
 | field | meaning |
 |---|---|
-| `decided_by` | "court position", or "court position plus appearance", or "appearance only (no home zones available)" |
+| `decided_by` | how the name was chosen: court position, position plus appearance, or appearance alone when no home zones exist |
+| `located_by` | how the thrower was found in the frame: `the goalball detector`, or `movement and posture` when it found nobody |
+| `frames_from_detector` | how many of the sampled frames the detector named a thrower in. Zero means the whole throw used the fallback |
 | `frames_voted` | how many frames produced a thrower to vote on |
 | `identity_scores` | the final score per candidate player — shows how close the runner-up was |
 | `appearance_scores` | the raw appearance similarity per candidate, kept even when it did not decide anything |

@@ -25,6 +25,16 @@ WHAT "MIRRORED" MEANS
 A half-turn on the flat court plane, so it stays correct under the camera's
 perspective. See goalball/court.py.
 
+A MEASURED ZONE ALWAYS BEATS A MIRRORED ONE
+-------------------------------------------
+Mirroring is what you do when you only tagged one half. If the gallery has a
+zone actually MEASURED in the half being analysed - because the player was
+tagged there too - that is used as-is and nothing is mirrored. A measured zone
+carries no mirror error at all.
+
+So tagging a player in both halves is strictly better than tagging them in one,
+and the two cost the same number of boxes.
+
 WHAT IT TURNS ABOUT
 -------------------
 Not, by default, the middle of the court polygon - the middle of the RECORDED
@@ -104,11 +114,25 @@ class HalfPlan:
     # Everything below moves POSITIONS only. Player ids, names and teams are
     # read straight through from the roster and never altered by the half.
     @staticmethod
-    def _recorded(player_config: dict) -> dict:
-        """{player_id -> (x, y)} exactly as tagged, before any mirroring."""
+    def _recorded(player_config: dict, half: Optional[int] = None) -> dict:
+        """
+        {player_id -> (x, y)} as tagged, before any mirroring.
+
+        With `half`, only the zones actually measured in that half. Without it,
+        each player's zone in whichever half they were tagged in - used to work
+        out the point the court turns about.
+        """
         out = {}
         for pid, info in player_config.items():
+            measured = info.get("home_zone_by_half") or {}
+            if half is not None:
+                xy = measured.get(int(half))
+                if xy:
+                    out[pid] = (float(xy[0]), float(xy[1]))
+                continue
             xy = info.get("home_zone") or info.get("position")
+            if not xy and measured:
+                xy = measured[sorted(measured)[0]]
             if xy:
                 out[pid] = (float(xy[0]), float(xy[1]))
         return out
@@ -132,13 +156,46 @@ class HalfPlan:
         """
         {player_id -> (x, y)} home zones in normalised frame coordinates,
         valid for the requested half. Players with no recorded zone are absent.
+
+        A zone measured in this very half is used untouched. Only a player
+        tagged solely in the other half gets their zone mirrored across.
         """
-        recorded = self._recorded(player_config)
-        if not self.mirrors_for_half(half):
-            return recorded
-        centre = self.mirror_centre(player_config, court)
-        return {pid: court.mirror_norm(x, y, centre)
-                for pid, (x, y) in recorded.items()}
+        half = int(half)
+        zones = dict(self._recorded(player_config, half))      # measured here
+        centre = None
+        for pid, info in player_config.items():
+            if pid in zones:
+                continue
+            measured = info.get("home_zone_by_half") or {}
+            source = None
+            for other in sorted(measured):
+                if int(other) != half:
+                    source = measured[other]
+                    break
+            if source is None:
+                xy = info.get("home_zone") or info.get("position")
+                if not xy or not self.mirrors_for_half(half):
+                    if xy:
+                        zones[pid] = (float(xy[0]), float(xy[1]))
+                    continue
+                source = xy
+            if centre is None:
+                centre = self.mirror_centre(player_config, court)
+            zones[pid] = court.mirror_norm(float(source[0]), float(source[1]),
+                                           centre)
+        return zones
+
+    def zone_provenance(self, player_config: dict, half: int) -> dict:
+        """{player_id -> 'measured' | 'mirrored'} for the requested half."""
+        half = int(half)
+        out = {}
+        for pid, info in player_config.items():
+            measured = info.get("home_zone_by_half") or {}
+            if half in measured:
+                out[pid] = "measured"
+            elif measured or info.get("home_zone") or info.get("position"):
+                out[pid] = "mirrored"
+        return out
 
     def team_bands(self, player_config: dict, court: Court, half: int) -> dict:
         """
@@ -188,10 +245,12 @@ class HalfPlan:
 
     # -- reporting -------------------------------------------------------
     def describe(self, player_config: dict, court: Court) -> None:
-        if self.mode == "auto":
-            logs.kv("half", f"both (switching at {self.half2_start_text})")
-        else:
-            logs.kv("half", f"{self.mode} of the match")
+        """
+        What this half setting means for the teams.
+
+        The setting itself, and where it came from, is announced by whoever
+        resolved it - this adds only the consequences.
+        """
         logs.kv("gallery tagged in", f"half {self.gallery_half}")
         if any(self.mirrors_for_half(h) for h in self.halves_in_play):
             centre = self.mirror_centre(player_config, court)
@@ -206,8 +265,19 @@ class HalfPlan:
             where = ("   " + ",  ".join(f"{t} at the {side}"
                                         for t, side in sorted(ends.items()))
                      ) if ends else "   (no home zones recorded yet)"
-            state = "home zones MIRRORED (teams changed ends)" if flip \
-                else "home zones as tagged"
+            provenance = self.zone_provenance(player_config, half)
+            measured = sum(1 for v in provenance.values() if v == "measured")
+            mirrored = sum(1 for v in provenance.values() if v == "mirrored")
+            if provenance:
+                parts = []
+                if measured:
+                    parts.append(f"{measured} measured in this half")
+                if mirrored:
+                    parts.append(f"{mirrored} mirrored from the other")
+                state = "home zones: " + ", ".join(parts)
+            else:
+                state = "home zones MIRRORED (teams changed ends)" if flip \
+                    else "home zones as tagged"
             logs.kv(f"half {half}", f"{state}{where}")
 
 
@@ -226,10 +296,15 @@ def build(gallery_half: int, mode: str, half2_start_text: Optional[str],
     start_frame = None
     if mode == "auto":
         if not half2_start_text:
-            logs.fail("--half auto needs --half2-start MM:SS",
-                      "give the video timestamp where the second half begins, "
-                      "e.g. --half2-start 24:00; if your video is a single half, "
-                      "use --half 1 or --half 2 instead")
+            logs.fail("a match is treated as two halves, but nothing says when "
+                      "the ends change",
+                      'add "half2_start": "22:00" to your config file - the '
+                      "video timestamp where the second half begins.\n"
+                      "      If this video is a SINGLE half, say so instead: "
+                      "--half 1 (or --half 2).\n"
+                      "      Guessing is not safe here: treating a full match "
+                      "as one half matches every second-half throw against the "
+                      "wrong end of the court.")
         from .events import mmss_to_seconds
         start_frame = int(round(mmss_to_seconds(half2_start_text) * fps))
 

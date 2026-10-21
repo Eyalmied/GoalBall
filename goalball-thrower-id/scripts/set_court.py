@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import cv2
 
-from _common import add_half_flags, base_parser, parse_timestamp, resolve
+from _common import (add_half_flags, base_parser, parse_timestamp, resolve,
+                     resolve_halves)
 from goalball import court as court_module
 from goalball import gallery as gallery_module
 from goalball import halves, logs, video
@@ -79,10 +80,9 @@ def main() -> None:
     except SystemExit:
         player_config, meta = {}, None
     if meta and meta["has_home_zones"]:
-        plan = halves.build(args.gallery_half or meta["gallery_half"],
-                            args.half, args.half2_start, info.fps,
-                            mirror_about=args.mirror_about)
         logs.section("WHAT THIS MEANS FOR THE TEAMS")
+        plan = resolve_halves(args, cfg, info.fps,
+                              args.gallery_half or meta["gallery_half"])
         plan.describe(player_config, court)
         logs.hint("if those ends look swapped, either the court corners or the "
                   "--half setting is wrong")

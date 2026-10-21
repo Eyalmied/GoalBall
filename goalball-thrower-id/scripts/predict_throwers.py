@@ -5,16 +5,14 @@ STEP 3 of 4 - predict who threw each ball.
 Reads the throw timestamps, watches the video around each one, and writes a
 named thrower plus a confidence for every throw.
 
-    # best accuracy (uses the CSV's ball release point for POSITION only)
     python scripts/predict_throwers.py --config config/mygame.json --half 1
 
     # a full-match video that changes ends part-way through
     python scripts/predict_throwers.py --config config/mygame.json \
            --half auto --half2-start 22:00
 
-    # strictly video-only: nothing from the CSV but the timestamps
-    python scripts/predict_throwers.py --config config/mygame.json --half 1 \
-           --release-source thrower
+Nothing is read from the CSV but the throw timestamps. Who threw, and where
+they were standing, both come from the video.
 
 Stop it at any time; --resume picks up where it left off, and the output file
 is rewritten after every throw.
@@ -27,7 +25,7 @@ import os
 import pathlib
 import time
 
-from _common import add_half_flags, base_parser, resolve
+from _common import add_half_flags, base_parser, resolve, resolve_halves
 from goalball import court as court_module
 from goalball import gallery as gallery_module
 from goalball import detect, halves, logs, predict, video
@@ -54,13 +52,6 @@ def main() -> None:
                         choices=["osnet", "dinov2"],
                         help="appearance model: osnet is stronger, dinov2 "
                              "installs more easily (default: osnet)")
-    tuning.add_argument("--release-source", dest="release_source",
-                        default="csv", choices=["csv", "thrower"],
-                        help="where the thrower's POSITION comes from. "
-                             "csv = the upstream ball release point, most "
-                             "accurate (~74%% correct thrower). thrower = the "
-                             "video-localised player, strictly video-only "
-                             "(~50%%). (default: csv)")
     tuning.add_argument("--frames", dest="frames_per_throw", type=int, default=5,
                         help="frames examined and voted per throw (default: 5)")
     tuning.add_argument("--window-fraction", dest="window_fraction",
@@ -72,15 +63,55 @@ def main() -> None:
                         help="frames are scaled to this width before detection "
                              "(default: 1280)")
     tuning.add_argument("--position-weight", dest="weight_position",
-                        type=float, default=1.0,
-                        help="1.0 = name the player by court position alone; "
-                             "lower mixes in appearance, which was measured to "
-                             "make things worse (default: 1.0)")
+                        type=float, default=0.75,
+                        help="how much court position counts against "
+                             "appearance when naming the player, on throws "
+                             "where the detector found the thrower "
+                             "(default: 0.75). Throws it could not find are "
+                             "decided on appearance alone - see "
+                             "--trust-position-always")
+    tuning.add_argument("--trust-position-always",
+                        dest="position_needs_detector",
+                        action="store_false", default=True,
+                        help="also use court position on throws where the "
+                             "goalball detector found nobody. Measured on "
+                             "labelled throws those positions land on chance, "
+                             "so this is rarely what you want")
+    tuning.add_argument("--no-sharpen-appearance", dest="sharpen_appearance",
+                        action="store_false", default=True,
+                        help="skip learning which directions of the embedding "
+                             "separate these players. The raw embedding puts "
+                             "two photos of one player further apart than two "
+                             "different players, so this is rarely what you "
+                             "want")
+    tuning.add_argument("--appearance-dims", dest="appearance_dims", type=int,
+                        default=3,
+                        help="how many separating directions to keep "
+                             "(default: 3, chosen by held-out splits)")
     tuning.add_argument("--position-spread", dest="position_spread",
                         type=float, default=0.12,
                         help="how far a player may stray from their home zone "
                              "and still be recognised, as a fraction of the "
                              "frame (default: 0.12)")
+    tuning.add_argument("--thrower-model", dest="thrower_model", default=None,
+                        help="a goalball-trained detector whose class 0 is "
+                             "'throwing_player'. This is the default way the "
+                             "thrower is picked (69%% correct against 46%% for "
+                             "the motion rule, which covers the throws it "
+                             "misses). Defaults to the project's "
+                             "Model Weights/best.pt; pass 'none' to turn it "
+                             "off")
+    tuning.add_argument("--motion-weight", dest="weight_motion", type=float,
+                        default=0.4,
+                        help="how much 'this player is moving' counts when "
+                             "picking the thrower. The thrower runs up and "
+                             "swings; defenders are already down and "
+                             "team-mates stand still (default: 0.4)")
+    tuning.add_argument("--upright-weight", dest="weight_upright", type=float,
+                        default=0.6,
+                        help="how much 'this player is on their feet' counts "
+                             "(default: 0.6). Anything from 0.4 to 0.7 scored "
+                             "the same on the reference match")
     tuning.add_argument("--team-source", dest="team_source",
                         default="position", choices=["position", "posture"],
                         help="where the team in the answer comes from. "
@@ -91,26 +122,12 @@ def main() -> None:
                              "consider its three players, which is required "
                              "when the gallery has no home zones "
                              "(default: position)")
-    tuning.add_argument("--team-grouping", dest="team_grouping",
-                        default="relative", choices=["relative", "absolute"],
-                        help="how the players are split into two teams by kit "
-                             "colour. relative = rank them within each frame, "
-                             "which survives the change of ends; absolute = "
-                             "match each crop on its own, which was measured to "
-                             "invert in the half the gallery was not tagged in "
-                             "(default: relative)")
-    tuning.add_argument("--no-ball", dest="use_ball", action="store_false",
-                        default=True,
-                        help="do not look for the ball; pick the thrower from "
-                             "posture and pose only")
     tuning.add_argument("--no-flip-augment", dest="flip_augment",
                         action="store_false", default=True,
                         help="skip mirrored copies when embedding crops (faster, "
                              "slightly worse)")
     tuning.add_argument("--pose-model", dest="pose_model", default=None,
                         help="YOLO pose model file (default: yolov8m-pose.pt)")
-    tuning.add_argument("--ball-model", dest="ball_model", default=None,
-                        help="YOLO detection model file (default: yolov8m.pt)")
 
     run = parser.add_argument_group("run control")
     run.add_argument("--limit", type=int, default=None,
@@ -148,9 +165,7 @@ def main() -> None:
     # ---- 4. the half --------------------------------------------------
     logs.step(4, TOTAL_STEPS, "Working out which half is being analysed")
     gallery_half = args.gallery_half or meta["gallery_half"]
-    plan = halves.build(gallery_half, args.half,
-                        args.half2_start or cfg.half2_start, info.fps,
-                        mirror_about=args.mirror_about)
+    plan = resolve_halves(args, cfg, info.fps, gallery_half)
     plan.describe(player_config, court)
     per_half = halves.counts_by_half(plan, throws)
     logs.kv("throws in each half", "   ".join(f"half {h}: {n}"
@@ -166,11 +181,12 @@ def main() -> None:
                   "rebuild the gallery: python scripts/build_gallery.py "
                   "--config ... --half 1")
     elif plan.mode != "auto" and len(per_half) == 1 and \
-            info.duration_s > 40 * 60 and not (args.half2_start or cfg.half2_start):
+            info.duration_s > 40 * 60 and not plan.half2_start_text:
         logs.warn(f"the video is {logs.human_duration(info.duration_s)} long, "
                   f"which usually means it holds both halves, but every throw "
                   f"is being treated as half {plan.mode}",
-                  "if it really covers both, use --half auto --half2-start MM:SS")
+                  "if it really covers both, add half2_start to your config - "
+                  "every step then splits the match the same way")
     logs.step_done()
 
     # ---- 5. models ----------------------------------------------------
@@ -179,27 +195,33 @@ def main() -> None:
         frames_per_throw=args.frames_per_throw,
         window_fraction=args.window_fraction,
         processing_width=args.processing_width,
-        use_ball=args.use_ball,
-        team_grouping=args.team_grouping,
+        weight_motion=args.weight_motion,
+        weight_upright=args.weight_upright,
+        # "none" turns it off; an unset flag falls through to the config.
+        thrower_model=(None
+                       if (args.thrower_model or "").lower() == "none"
+                       else (args.thrower_model or cfg.thrower_model)),
         team_source=args.team_source,
-        release_source=args.release_source,
         weight_position=args.weight_position,
         position_spread=args.position_spread,
         flip_augment=args.flip_augment,
+        position_needs_detector=args.position_needs_detector,
+        sharpen_appearance=args.sharpen_appearance,
+        appearance_dims=args.appearance_dims,
         pose_model=args.pose_model or cfg.pose_model,
-        ball_model=args.ball_model or cfg.ball_model,
         appearance_model=args.appearance,
     )
-    if settings.release_source == "csv" and \
-            not any(t.release_point() for t in throws):
-        logs.warn("--release-source csv was asked for, but no throw in the CSV "
-                  "has a ball release point",
-                  "the run will fall back to video-localised positions, which "
-                  "is what --release-source thrower does")
-    detect.warm_up(settings.pose_model,
-                   settings.ball_model if settings.use_ball else None)
+    if settings.thrower_model and not detect.has_model(settings.thrower_model):
+        logs.warn(f"no goalball detector at {settings.thrower_model}",
+                  "the thrower will be picked by movement and posture "
+                  "instead, which is measured at 46% against 69% - point "
+                  "--thrower-model at the project's Model Weights/best.pt to "
+                  "get the better one")
+        settings.thrower_model = None
+    detect.warm_up(settings.pose_model)
     predictor = predict.Predictor(cap, info, court, plan, player_config,
-                                  crops, settings)
+                                  crops, settings,
+                                  crops_by_half=meta.get("crops_by_half"))
     logs.blank()
     settings.describe()
     logs.step_done()

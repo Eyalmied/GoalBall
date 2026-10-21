@@ -39,14 +39,65 @@ The players do not change — just where they stand:
 
 | | |
 |---|---|
-| **changes** | each player's home zone: the point moves to the opposite end of the court |
+| **changes** | each player's home zone: the point moves to the opposite end of the court — *measured directly* if you tagged them in both halves, mirrored if not |
 | unchanged | the player ids — player 3 is still player 3 |
 | unchanged | the names, and which team each player is on |
-| unchanged | the reference images — a player looks the same in both halves |
+| **changes** | which reference images are used — each half has its own set |
 | unchanged | the court itself — same physical court both halves |
 
 Nothing is renumbered, renamed or reassigned. The half only decides *where*
 each player is expected to be.
+
+---
+
+## Set it once, in the config
+
+**A match has two halves, so that is the default.** Every run covers both and
+splits them at `half2_start` from your config — the **single source of truth**
+for when the ends change. Every step reads it from there (tagging, the court
+check, labelling, prediction), so they cannot disagree about where the match
+splits.
+
+```json
+{
+  "...": "...",
+  "half2_start": "22:00"
+}
+```
+
+With that set, nothing else is needed:
+
+```bash
+python scripts/run_pipeline.py --config config/mygame.json
+```
+
+The run says what it worked out and where it got it:
+
+```
+    half                   auto   (the config gives a half-time, so both halves are in play)
+    ends change at         22:00   (from the config file)
+```
+
+Because two halves is the default, `half2_start` is **required**. Leave it out
+and the run stops rather than guessing:
+
+```
+✗ PROBLEM  a match is treated as two halves, but nothing says when the ends change
+     what to do: add "half2_start": "22:00" to your config file - the video
+     timestamp where the second half begins.
+     If this video is a SINGLE half, say so instead: --half 1 (or --half 2).
+```
+
+That is deliberate. The old behaviour — quietly treating the whole video as
+one half — is exactly how every second-half throw ends up matched against the
+wrong end of the court, with nothing on screen to tell you.
+
+**If your video really is a single half**, say so with `--half 1` or
+`--half 2`. Then no `half2_start` is needed.
+
+The flags below still exist for one-off experiments. `--half2-start` overrides
+the config for that run only, and the run warns you when the two disagree,
+because a disagreement means the steps are splitting the match differently.
 
 ---
 
@@ -58,30 +109,39 @@ each player is expected to be.
 python scripts/build_gallery.py --config config/mygame.json --half 1
 ```
 
-Tag inside **one** half and say which one. The half is written into
-`gallery/manifest.json` as `gallery_half`, so you never state it again.
+Tag from **either** half — press `h` during tagging to switch, as often as you
+like, for any player. Each position is stored with the half it came from, so
+the two never get averaged together.
 
-If your config has `half2_start`, the builder only offers you frames from the
-half you named — you cannot accidentally mix the two.
+Each half gets **its own reference images and its own home zones**, and the
+builder asks for five images per player per half. This is not tidiness: a
+player near the camera in one half is at the far end in the other, so the
+crops differ in size, lighting and which way they face. A throw is matched
+against the half it happened in.
+
+A player tagged in both halves ends up with a **measured** zone for each, and
+nothing is mirrored for them. A player tagged in only one gets their zone
+mirrored across, which works but carries the mirror's error.
+
+`--half` says which half to start in, and which one the gallery reports as its
+reference (`gallery_half` in `manifest.json`).
 
 ### When you predict
 
 ```bash
-# the footage is the same half the gallery was tagged in
-python scripts/predict_throwers.py --config config/mygame.json --half 1
+# normal: the config's half2_start decides everything
+python scripts/predict_throwers.py --config config/mygame.json
 
-# the footage is the other half — home zones get mirrored
+# this footage is only one half, whatever the config says
+python scripts/predict_throwers.py --config config/mygame.json --half 1
 python scripts/predict_throwers.py --config config/mygame.json --half 2
 
-# one file covering the whole match, ends changing at 22:00
-python scripts/predict_throwers.py --config config/mygame.json \
-       --half auto --half2-start 22:00
+# try a different half-time without editing the config (warns that it differs)
+python scripts/predict_throwers.py --config config/mygame.json --half2-start 25:00
 ```
 
-`--half auto` decides per throw from its timestamp, so a full-match video needs
-one run, not two.
-
-Put `"half2_start": "22:00"` in your config file and you can drop the flag.
+`auto` decides per throw from its timestamp, so a full-match video needs one
+run, not two.
 
 ---
 
@@ -137,9 +197,9 @@ frame, so the flip is exact and reversible.
 
 | | affected by the half? |
 |---|---|
-| Home-zone **positions** | **yes** — mirrored end-for-end |
+| Home-zone **positions** | **yes** — measured per half where you tagged, mirrored end-for-end where you did not |
 | Player ids, names, teams | no — read straight from the roster, never altered |
-| Reference images | no — a player looks the same in both halves |
+| Reference images | **yes** — each half has its own set, and a throw is matched against its own half |
 | The court fence | no — same physical court both halves |
 | Which team is attacking | no — decided by **posture**: defenders lie flat to block, attackers stand. That rule does not care which end anyone is at, which is exactly why it survives the change of ends |
 | The ball release point read from the CSV | no — it is measured in the footage, so it is already in the right half's geometry |
@@ -163,7 +223,7 @@ the run says so, and names both causes:
   gallery was tagged in;
 - **or the kit colours are not separating**, which happens when one team is far
   from the camera. The team in the answer comes from court position, so it
-  survives that; a strictly video-only run (`--release-source thrower`) would
+  survives that; a run without home zones would
   not, because it needs the kit groups to localise the thrower.
 
 Individual disagreements are flagged on the throw's own line and stored as
