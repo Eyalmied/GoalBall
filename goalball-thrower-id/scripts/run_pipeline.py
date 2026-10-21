@@ -83,11 +83,6 @@ def main() -> None:
     parser.add_argument("--appearance", default="osnet",
                         choices=["osnet", "dinov2"],
                         help="appearance model (default: osnet)")
-    parser.add_argument("--release-source", dest="release_source",
-                        default="csv", choices=["csv", "thrower"],
-                        help="csv = use the upstream ball release point for the "
-                             "thrower's position, most accurate; thrower = "
-                             "strictly video-only (default: csv)")
     parser.add_argument("--limit", type=int, default=None,
                         help="only predict the first N throws (a quick check)")
     parser.add_argument("--holdout", type=float, default=0.3,
@@ -197,7 +192,6 @@ def main() -> None:
         elif name == "predict":
             command = ["python", str(HERE / "predict_throwers.py")] + inherited + [
                 "--appearance", args.appearance,
-                "--release-source", args.release_source,
             ] + override
             if args.half:
                 command += ["--half", args.half]

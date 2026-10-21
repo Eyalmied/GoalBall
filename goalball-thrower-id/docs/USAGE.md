@@ -220,20 +220,10 @@ Worth knowing:
   `--resume` to carry on where you left off.
 - **`--limit 5`** does a quick five-throw check before committing to the lot.
 
-### The two flags that change the answer
+### The flags that change the answer
 
-```bash
-# default: use the upstream detector's ball release point as the thrower's
-# POSITION only. ~74% correct thrower.
---release-source csv
-
-# strictly video-only: nothing from the CSV but the timestamps. ~50%.
---release-source thrower
-```
-
-The difference is only where the thrower's position comes from; everything else
-is identical. Use `csv` unless you specifically need a video-only result — see
-[RESULTS.md](RESULTS.md) for why the gap is so large.
+Nothing is read from the CSV but the throw timestamps. Who threw, and where
+they were standing, both come from the video.
 
 ```bash
 --appearance osnet      # default, stronger
@@ -291,16 +281,16 @@ HELD OUT - this is the number that counts
     labelled throws        52
     of those, predicted    52 (100.0%)
 
-    CORRECT THROWER        38/52 = 73.1%
+    CORRECT THROWER        43/52 = 82.7%
     correct team           52/52 = 100.0%
-    right player, given    38/52 = 73.1%
+    right player, given    43/52 = 82.7%
       the right team
     guessing would give    33.3%
 ```
 
 (A real held-out block from the reference match. The all-throws number for the
-same run is 68.5%; held-out sets of 52 throws swing by a few points either
-way.)
+same run is 72.4%, and the tune block is 68.2% — held-out sets of 52 throws
+swing by ten points or more either way, so treat a single split with caution.)
 
 `--holdout 0.3` splits the throws the same way every run. Tune against the
 "tune" block; only read the "held out" block at the end. Quoting a number you
@@ -370,7 +360,7 @@ effort — see [RESULTS.md](RESULTS.md) before trying to push past it.
 | One half much worse than the other | `half2_start` is wrong, or `--half` does not match the footage. See [HALVES.md](HALVES.md) |
 | The wrong **teammate**, often | the known hard case: two players whose home zones overlap. More gallery images will not fix it — [RESULTS.md](RESULTS.md) explains why |
 | Some throws get **no call** | nobody was detected in that window (players occluded). Those come out with no thrower rather than a guess; the run summary counts them |
-| `posture vs the end` below 75% | either `--half` is wrong for this footage, or one team is too far from the camera for the kit colours to separate. The answer's team comes from court position and survives that, but a video-only run (`--release-source thrower`) would not |
+| `posture vs the end` below 75% | either `--half` is wrong for this footage, or one team is too far from the camera for the kit colours to separate. The answer's team comes from court position and survives that |
 
 Add `--verbose` to any script to see the internals, including the framework
 output that is normally hidden.

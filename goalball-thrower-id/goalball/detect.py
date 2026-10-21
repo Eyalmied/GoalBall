@@ -1,37 +1,32 @@
 """
-Finding people and the ball in a frame.
+Finding people in a frame.
 
 PEOPLE
-    One pass of YOLO-pose gives both a box and a 17-point skeleton per person,
-    so posture (which team is attacking) and throwing shape (which attacker
-    threw) come free with the detection - no second model.
+    One pass of YOLO-pose gives a box per person, and the box shape alone
+    says whether they are upright or already down - which is what decides
+    the attacking team.
 
     Every detection is then checked against the court fence using the FEET,
     not the middle of the box. A spectator in the front row can easily have
     their head and torso overlapping the court in the image; their feet never
     do.
 
-THE BALL
-    Read with the generic COCO "sports ball" class. It is good enough to find
-    roughly where the ball was released and no better - measured at ~55%
-    when used to place the thrower, versus ~81% for the upstream detector's
-    own release point. That gap is the single biggest limit on accuracy today;
-    see docs/RESULTS.md.
+THE THROWER
+    A detector fine-tuned on goalball names the thrower outright. The
+    movement-and-posture rule below is only the fallback for the throws it
+    misses; see docs/RESULTS.md.
 """
 
 from __future__ import annotations
 
 import pathlib
-from typing import Optional
 
 import cv2
 import numpy as np
 
 from . import logs
-from .pose import throw_score
 
 PERSON_CLASS = 0
-SPORTS_BALL_CLASS = 32
 
 # A detector fine-tuned on goalball labels the thrower directly. Class 0 of
 # the project's own weights is "throwing_player" - a model trained to answer
@@ -65,11 +60,9 @@ def _load(path: str, what: str):
     return model
 
 
-def warm_up(pose_model: str, ball_model: Optional[str] = None) -> None:
-    """Load the models up front so the first throw is not mysteriously slow."""
+def warm_up(pose_model: str) -> None:
+    """Load the model up front so the first throw is not mysteriously slow."""
     _load(pose_model, "body-pose")
-    if ball_model:
-        _load(ball_model, "ball")
 
 
 def people(frame: np.ndarray, court, pose_model: str,
@@ -84,7 +77,6 @@ def people(frame: np.ndarray, court, pose_model: str,
         feet        (x, y) bottom-centre of the box, in pixels
         feet_norm   the same point as a fraction of the frame
         flatness    box width / height - high means lying down
-        throw_pose  0..1 "looks like a release" score
     """
     model = _load(pose_model, "body-pose")
     height, width = frame.shape[:2]
@@ -115,7 +107,6 @@ def people(frame: np.ndarray, court, pose_model: str,
             "feet": feet,
             "feet_norm": (feet[0] / width, feet[1] / height),
             "flatness": (x2 - x1) / max(1.0, y2 - y1),
-            "throw_pose": throw_score(skeleton),
         })
     return found
 
@@ -153,7 +144,7 @@ def throwing_players(frame: np.ndarray, court, model_path: str,
             "box": (x1, y1, x2, y2), "crop": crop, "keypoints": None,
             "feet": feet, "feet_norm": (feet[0] / width, feet[1] / height),
             "flatness": (x2 - x1) / max(1.0, y2 - y1),
-            "throw_pose": 0.0, "confidence": float(score),
+            "confidence": float(score),
         })
     return found
 
@@ -205,43 +196,3 @@ def motion_in_box(motion, box) -> float:
     x1, y1, x2, y2 = box
     patch = motion[max(0, y1):y2, max(0, x1):x2]
     return float(patch.mean()) if patch.size else 0.0
-
-
-def ball_release_point(cap, throw, court, ball_model: str, proc_w: int,
-                       window_fraction: float, samples: int = 4,
-                       confidence: float = 0.10) -> Optional[tuple]:
-    """
-    Best guess at where the ball was released, found in the video alone.
-
-    Looks at a few frames right after the throw starts and keeps the most
-    confident on-court ball. Returns (x, y) in this frame's pixels, or None
-    when the ball was never confidently seen - in which case the caller falls
-    back to posture and pose only, rather than trusting a bad point.
-    """
-    from .video import read_frame
-
-    model = _load(ball_model, "ball")
-    start, end = throw.window(window_fraction)
-    best = None                                    # (confidence, x, y)
-
-    for index in np.linspace(start, end, max(1, samples), dtype=int):
-        frame = read_frame(cap, int(index), proc_w)
-        if frame is None:
-            continue
-        height, width = frame.shape[:2]
-        polygon = court.polygon_px(width, height) if court is not None else None
-        result = model(frame, classes=[SPORTS_BALL_CLASS], conf=confidence,
-                       verbose=False)[0]
-        if result.boxes is None or len(result.boxes) == 0:
-            continue
-        for score, box in zip(result.boxes.conf.cpu().numpy(),
-                              result.boxes.xyxy.cpu().numpy()):
-            cx = float((box[0] + box[2]) / 2)
-            cy = float((box[1] + box[3]) / 2)
-            if polygon is not None and \
-                    cv2.pointPolygonTest(polygon, (cx, cy), False) < 0:
-                continue        # a ball in the crowd is a false positive
-            if best is None or float(score) > best[0]:
-                best = (float(score), cx, cy)
-
-    return (best[1], best[2]) if best else None

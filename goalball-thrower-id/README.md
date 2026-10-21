@@ -24,9 +24,9 @@ and **the thrower is on their feet** while the defenders are already flat.
 
 | | Measured on 181 hand-labelled throws, both halves |
 |---|---|
-| Correct team | **98.9%** |
-| Correct thrower | **68.5%** |
-| held out (52 throws) | 73.1% / 100% |
+| Correct team | **99.4%** |
+| Correct thrower | **72.4%** |
+| half 1 / half 2 | 74.4% / 70.5% |
 | Guessing | 17% / 50% |
 
 Around 80% is the arithmetic ceiling, and
@@ -180,7 +180,10 @@ Every script takes `--help`, `--verbose`, and the same `--config`.
 - Python 3.9 or newer, and a display for the two setup steps
 - The match video, and the throw detector's CSV — **only the timestamps** are
   used to decide a thrower
-- One appearance model: `torchreid` (better) or `transformers` (easier)
+- One appearance model: `torchreid` (better) or `transformers` (easier). The
+  gallery's own labels are used to learn which part of the embedding actually
+  tells these players apart — without that step the raw embedding puts two
+  photos of one player further apart than two different players
 - Optionally the project's `Model Weights/best.pt`, whose `throwing_player`
   class picks the thrower directly. Without it the pipeline falls back to
   movement and posture, at a cost of about 22 points

@@ -129,7 +129,7 @@ where. If the ends look swapped against the video, stop and re-read
 ## Step 4 — predict *(3 minutes, no window)*
 
 ```bash
-python scripts/predict_throwers.py --config config/mygame.json --release-source thrower
+python scripts/predict_throwers.py --config config/mygame.json
 ```
 
 One line per throw:
@@ -143,6 +143,8 @@ Safe to interrupt; add `--resume` to carry on.
 **Check the header** before letting it run:
 
 ```
+learned 3 direction(s) that tell these players apart
+how distinct they look 0.41 before, 3.23 after  (above 1 is usable)
 thrower picked by      the goalball detector's own 'throwing_player' class
 when it finds nobody   movement 40%  standing up 60%
 half                   auto - both halves, the default
@@ -154,10 +156,10 @@ half 2                 home zones: 6 measured in this half
 If `half 2` says *mirrored from the other*, you only tagged one half — go back
 to step 3 and press `h`.
 
-> `--release-source thrower` means "use the position we found in the video".
-> The alternative, `csv`, uses the upstream detector's release point, which is
-> in a different coordinate system and scores roughly half as well. See
-> [RESULTS.md](RESULTS.md) §3a.
+> The thrower's position is the one found in the video. The upstream
+> detector's CSV release point is in a different coordinate system and scored
+> roughly half as well, so it is no longer used for prediction at all — only
+> to seed the labelling tool. See [RESULTS.md](RESULTS.md) §3a.
 
 ---
 
@@ -255,6 +257,7 @@ the camera angle. Nothing is overwritten without telling you.
 | `no goalball detector at ...` | the thrower falls back to movement + posture, 46% against 69%. Point `--thrower-model` at the project's `Model Weights/best.pt` |
 | `a match is treated as two halves, but nothing says when the ends change` | add `half2_start` to the config, or pass `--half 1` if the video is a single half |
 | `this gallery has no home zones` | it was built by an older version — re-run step 3 |
+| `how distinct they look` ends below 1.0 | the reference images are too varied to tell the players apart. Re-tag with clearer crops, or run with `--position-weight 1.0` |
 | `half 2 … mirrored from the other` | you tagged only one half; press `h` during step 3 |
 | teams reported the wrong way round | you tagged in the other half — re-run step 3 with `--half 2` |
 | one half much worse than the other | `half2_start` is wrong, or that half has no references |

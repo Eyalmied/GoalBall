@@ -223,7 +223,7 @@ the run says so, and names both causes:
   gallery was tagged in;
 - **or the kit colours are not separating**, which happens when one team is far
   from the camera. The team in the answer comes from court position, so it
-  survives that; a strictly video-only run (`--release-source thrower`) would
+  survives that; a run without home zones would
   not, because it needs the kit groups to localise the thrower.
 
 Individual disagreements are flagged on the throw's own line and stored as

@@ -7,7 +7,6 @@
   "labels": "labels_isr_chn.csv",
   "predictions": "predictions_isr_chn.json",
   "pose_model": "yolov8m-pose.pt",
-  "ball_model": "yolov8m.pt",
   "half2_start": "22:00",
   "roster": {
     "1": {
